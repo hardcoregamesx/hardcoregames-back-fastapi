@@ -268,3 +268,11 @@ class CouponRedemption(Base):
 
     coupon = relationship("Coupon", backref="redemptions")
     user = relationship("User", backref="coupon_redemptions")
+
+
+class ProductAlias(Base):
+    __tablename__ = "products_productalias"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alias = Column(String(200), nullable=False)
+    producto_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
