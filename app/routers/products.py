@@ -20,6 +20,7 @@ from ..models import (
     SaleDetail,
     CouponRule,
     CouponRedemption,
+    ProductAlias,
 )
 from ..util.util_auth import get_current_user
 
@@ -484,7 +485,16 @@ async def list_products(
             query = query.where(or_(*conditions))
         else:
             pattern = f"%{search_norm}%"
-            query = query.where(title_expr.ilike(pattern))
+            alias_subquery = (
+                select(ProductAlias.producto_id)
+                .where(func.lower(ProductAlias.alias) == search.lower())
+            )
+            query = query.where(
+                or_(
+                    title_expr.ilike(pattern),
+                    Product.id_product.in_(alias_subquery)
+                )
+            )
 
     result = await session.execute(query)
     products = result.scalars().all()
@@ -1115,7 +1125,16 @@ async def search_products(q: str, offset: int = 0, limit: int = 20, use_trgm: bo
         base = select(Product).options(selectinload(Product.consoles)).where(or_(*conditions))
     else:
         pattern = f"%{search_norm}%"
-        base = select(Product).options(selectinload(Product.consoles)).where(title_expr.ilike(pattern))
+        alias_subquery = (
+            select(ProductAlias.producto_id)
+            .where(func.lower(ProductAlias.alias) == q.lower())
+        )
+        base = select(Product).options(selectinload(Product.consoles)).where(
+            or_(
+                title_expr.ilike(pattern),
+                Product.id_product.in_(alias_subquery)
+            )
+        )
 
     if use_trgm:
         base = base.order_by(func.similarity(Product.title, q).desc())
@@ -1436,4 +1455,4 @@ async def validate_coupon_for_product(
         total_after=total_after if is_valid else total_before,
         discount_amount=discount_amount if is_valid else 0.0,
         discounted_items=discounted_items if is_valid else [],
-    )
+)
