@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
-from sqlalchemy import select, func, or_, cast, Integer, literal
+from sqlalchemy import select, func, or_, cast, Integer, literal, case
 from sqlalchemy.orm import selectinload
 
 from ..database import get_session
@@ -469,7 +469,7 @@ async def list_products(
     search: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
-    query = select(Product).options(selectinload(Product.consoles)).order_by(Product.id_product)
+    query = select(Product).options(selectinload(Product.consoles)).order_by(case((Product.puntos_venta == 0, 1), else_=0), Product.id_product)
 
     if search:
         search_norm = _normalize_search_text(search)
@@ -547,7 +547,7 @@ async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession =
         * limit: max number of items to return (default 10)
     """
 
-    query = select(Product).order_by(Product.id_product)
+    query = select(Product).order_by(case((Product.puntos_venta == 0, 1), else_=0), Product.id_product)
     if offset:
         query = query.offset(offset)
     query = query.limit(limit)
@@ -716,7 +716,7 @@ async def get_products_by_type(
         select(Product)
         .options(selectinload(Product.consoles))
         .where(cast(Product.type_id_id, Integer) == type_id)
-        .order_by(Product.id_product)
+        .order_by(case((Product.puntos_venta == 0, 1), else_=0), Product.id_product)
         .limit(limit)
     )
 
@@ -763,7 +763,7 @@ async def get_products_by_console(
         .join(Product.consoles)
         .options(selectinload(Product.consoles))
         .where(Consoles.id_console == console_id)
-        .order_by(Product.id_product)
+        .order_by(case((Product.puntos_venta == 0, 1), else_=0), Product.id_product)
         .limit(limit)
     )
 
@@ -810,7 +810,7 @@ async def get_products_by_game_type(
         select(Product)
         .options(selectinload(Product.consoles))
         .where(cast(Product.tipo_juego_id, Integer) == game_type_id)
-        .order_by(Product.id_product)
+        .order_by(case((Product.puntos_venta == 0, 1), else_=0), Product.id_product)
         .limit(limit)
     )
 
@@ -889,7 +889,7 @@ async def filter_products(
     if conditions:
         query = query.where(*conditions)
 
-    query = query.order_by(Product.id_product)
+    query = query.order_by(case((Product.puntos_venta == 0, 1), else_=0), Product.id_product)
     if offset:
         query = query.offset(offset)
     query = query.limit(limit)
