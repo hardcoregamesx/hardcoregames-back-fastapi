@@ -10,7 +10,7 @@ from app.models import Product, User, OrderBuy
 from app.repositories.order_buy import OrderBuyRepository
 from app.services.order_buy import on_order_created, on_status_transition
 from app.util.util_auth import get_current_user
-from app.util.supabase_storage import upload_invoice_file, SupabaseNotConfiguredError
+from app.util.local_storage import upload_invoice_file, LocalStorageError
 
 router = APIRouter(prefix="/order-buy", tags=["order-buy"])
 
@@ -177,8 +177,8 @@ async def create_order(
         object_name = f"orders/{current_user.id}/{int(datetime.utcnow().timestamp())}_{file.filename}"
         try:
             file_path = await upload_invoice_file(file, object_name)
-        except SupabaseNotConfiguredError:
-            # Fallback: keep just the original filename if Supabase is not configured
+        except LocalStorageError:
+            # Fallback: keep just the original filename if local storage fails
             file_path = file.filename
 
     # Create the order inside the current session transaction (no commit yet).
@@ -236,7 +236,7 @@ async def update_order(
         object_name = f"orders/{current_user.id}/{int(datetime.utcnow().timestamp())}_{file.filename}"
         try:
             file_path = await upload_invoice_file(file, object_name)
-        except SupabaseNotConfiguredError:
+        except LocalStorageError:
             file_path = file.filename
 
     # Run lifecycle side-effects BEFORE mutating order.status so the service

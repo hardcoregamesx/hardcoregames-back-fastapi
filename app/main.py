@@ -1,5 +1,9 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.routers import auth
 from .routers import products
@@ -19,6 +23,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve locally-stored invoice files (see app/util/local_storage.py).
+_invoices_dir = Path(os.getenv("INVOICES_DIR", "/data/invoices"))
+_invoices_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/invoices", StaticFiles(directory=str(_invoices_dir)), name="invoices")
 
 @app.on_event("startup")
 async def on_startup():
