@@ -844,7 +844,7 @@ async def get_products_by_game_type(
 async def filter_products(
     q: str | None = None,
     type_id: int | None = None,
-    console_id: int | None = None,
+    console_id: str | None = None,
     game_type_id: int | None = None,
     offset: int = 0,
     limit: int = 20,
@@ -883,8 +883,9 @@ async def filter_products(
         conditions.append(cast(Product.tipo_juego_id, Integer) == game_type_id)
 
     if console_id is not None:
+        console_ids = [int(c.strip()) for c in console_id.split(",") if c.strip()]
         query = query.join(Product.consoles)
-        conditions.append(Consoles.id_console == console_id)
+        conditions.append(Consoles.id_console.in_(console_ids))
 
     if conditions:
         query = query.where(*conditions)
