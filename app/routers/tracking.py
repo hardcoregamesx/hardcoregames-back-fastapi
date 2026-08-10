@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
 
-PIXEL_ID = "2161665674417703"
+PIXEL_ID = "1242058424697245"
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")
 GRAPH_API_VERSION = "v19.0"
 CAPI_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PIXEL_ID}/events"
