@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, conint
 
@@ -78,7 +78,7 @@ async def exchange_points_for_balance(
 ):
     """Exchange loyalty points for balance_exchange.
 
-    Conversion rate: **1 point = 0.5 COP**.
+    Conversion rate: configurable via variable del sistema "puntos_pesos" (tabla products_variablessistema).
 
     The amount credited to `balance_exchange` is stored as an integer COP,
     so the calculated value is truncated to an integer (e.g. 3 points -> 1 COP).
@@ -98,7 +98,17 @@ async def exchange_points_for_balance(
     balance_before = int(profile.balance_exchange or 0)
 
     exchanged_points = int(payload.points_to_exchange)
-    exchanged_amount_cop = int(exchanged_points * 0.5)
+    # Leer tasa de conversion desde variables del sistema (puntos_pesos)
+    var_result = await session.execute(
+        text(
+            "SELECT valor FROM products_variablessistema "
+            "WHERE nombre_variable = 'puntos_pesos' AND estado = true LIMIT 1"
+        )
+    )
+    var_row = var_result.fetchone()
+    cop_per_point = float(var_row[0]) if var_row else 0.5
+
+    exchanged_amount_cop = int(exchanged_points * cop_per_point)
 
     # Update profile
     profile.puntos = points_before - exchanged_points
