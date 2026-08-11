@@ -34,7 +34,9 @@ async def _get_or_create_user_customized(
 ) -> UserCustomized:
     stmt = select(UserCustomized).where(UserCustomized.user_id == current_user.id)
     if for_update:
-        stmt = stmt.with_for_update()
+        # UserCustomized.user es lazy="joined": sin `of=`, Postgres rechaza el
+        # FOR UPDATE por el LEFT OUTER JOIN hacia auth_user.
+        stmt = stmt.with_for_update(of=UserCustomized)
     result = await session.execute(stmt)
     profile = result.scalars().first()
 

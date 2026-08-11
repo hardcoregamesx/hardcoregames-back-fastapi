@@ -369,9 +369,10 @@ async def exchange_points(
 
     # Load or create the customized profile to access puntos. Row lock: two
     # concurrent exchange requests must not both read the same balance and
-    # both succeed.
+    # both succeed. UserCustomized.user es lazy="joined": sin `of=`, Postgres
+    # rechaza el FOR UPDATE por el LEFT OUTER JOIN hacia auth_user.
     result = await session.execute(
-        select(UserCustomized).where(UserCustomized.user_id == current_user.id).with_for_update()
+        select(UserCustomized).where(UserCustomized.user_id == current_user.id).with_for_update(of=UserCustomized)
     )
     profile = result.scalars().first()
 

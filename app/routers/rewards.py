@@ -31,7 +31,11 @@ DEFAULT_COUPON_VALIDITY_MINUTES = 60
 async def _get_or_create_profile(session: AsyncSession, user_id: int, for_update: bool = False) -> UserCustomized:
     stmt = select(UserCustomized).where(UserCustomized.user_id == user_id)
     if for_update:
-        stmt = stmt.with_for_update()
+        # UserCustomized.user es lazy="joined": sin `of=`, Postgres rechaza el
+        # FOR UPDATE porque arrastra el LEFT OUTER JOIN hacia auth_user
+        # ("cannot be applied to the nullable side of an outer join").
+        # Bloqueando explicitamente solo esta tabla se evita el problema.
+        stmt = stmt.with_for_update(of=UserCustomized)
     result = await session.execute(stmt)
     profile = result.scalars().first()
     if profile is None:
