@@ -335,7 +335,7 @@ class RoulettePrize(Base):
     __tablename__ = "rewards_rouletteprize"
     __table_args__ = (
         CheckConstraint(
-            "prize_type IN ('COUPON_FIXED','COUPON_PERCENT','POINTS','NOTHING')",
+            "prize_type IN ('COUPON_FIXED','COUPON_PERCENT','POINTS','NOTHING','MANUAL_CLAIM')",
             name="rewards_rouletteprize_type_check",
         ),
     )

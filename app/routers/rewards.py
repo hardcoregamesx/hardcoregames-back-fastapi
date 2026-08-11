@@ -115,6 +115,11 @@ def _serialize_spin_result(spin: RouletteSpin, prize: RoulettePrize, coupon: Cou
             if coupon
             else None
         ),
+        "claim_message": (
+            f"Escríbenos por WhatsApp con tu código de giro #{spin.id} para reclamar tu premio."
+            if prize.prize_type == "MANUAL_CLAIM"
+            else None
+        ),
         "points_after": points_after,
     }
 
@@ -237,8 +242,24 @@ async def spin_roulette(
     prizes_result = await session.execute(
         select(RoulettePrize).where(RoulettePrize.roulette_id == roulette.id, RoulettePrize.is_active.is_(True))
     )
-    prizes = prizes_result.scalars().all()
-    prize = _pick_weighted_prize(prizes)
+    prizes = list(prizes_result.scalars().all())
+
+    # Enforce max_per_user: exclude prizes this user already exhausted.
+    limited_prize_ids = [p.id for p in prizes if p.max_per_user is not None]
+    user_prize_counts: dict[int, int] = {}
+    if limited_prize_ids:
+        counts_result = await session.execute(
+            select(RouletteSpin.prize_id, func.count(RouletteSpin.id))
+            .where(RouletteSpin.user_id == current_user.id, RouletteSpin.prize_id.in_(limited_prize_ids))
+            .group_by(RouletteSpin.prize_id)
+        )
+        user_prize_counts = dict(counts_result.all())
+
+    eligible_prizes = [
+        p for p in prizes
+        if p.max_per_user is None or user_prize_counts.get(p.id, 0) < p.max_per_user
+    ]
+    prize = _pick_weighted_prize(eligible_prizes)
 
     points_before = int(profile.puntos or 0)
     points_after = points_before - roulette.cost_points
