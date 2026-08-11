@@ -1,7 +1,12 @@
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.models import User, UserCustomized
+from app.models import User, UserCustomized, Coupon
 from app.util.util_auth import get_password_hash
+
+WELCOME_COUPON_AMOUNT = 3000
+WELCOME_COUPON_VALIDITY_MINUTES = 60
 
 async def get_user_by_username(session: AsyncSession, username: str):
     result = await session.execute(select(User).filter(User.username == username))
@@ -35,6 +40,18 @@ async def create_user(
         puntos=0,
     )
     session.add(profile)
+
+    expiration = datetime.now(timezone.utc) + timedelta(minutes=WELCOME_COUPON_VALIDITY_MINUTES)
+    welcome_coupon = Coupon(
+        name_coupon=f"WELCOME-{db_user.id}-{int(datetime.now(timezone.utc).timestamp())}",
+        expiration_date=expiration,
+        is_valid=True,
+        user_id=db_user.id,
+        discount_type="FIXED_AMOUNT",
+        fixed_amount=WELCOME_COUPON_AMOUNT,
+        source="WELCOME",
+    )
+    session.add(welcome_coupon)
 
     await session.commit()
     await session.refresh(db_user)
