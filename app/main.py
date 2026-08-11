@@ -18,9 +18,26 @@ from .routers import tracking
 
 app = FastAPI(title="Reactive FastAPI Microservice")
 
+# allow_origins=["*"] combinado con allow_credentials=True es una
+# combinacion invalida: Starlette solo hace echo del Origin real (necesario
+# para que el navegador acepte la respuesta) cuando la request trae un
+# header Cookie. Como este API se autentica con Bearer token (sin cookies),
+# toda respuesta a un POST/PUT/DELETE autenticado volvia con
+# "Access-Control-Allow-Origin: *" + "Access-Control-Allow-Credentials: true",
+# combinacion que el navegador rechaza sin excepcion. Afectaba a cualquier
+# endpoint autenticado por POST (cupones, canje de puntos, ahora la ruleta),
+# no solo a Hardcore Rewards. Se resuelve listando los origenes reales.
+ALLOWED_ORIGINS = [
+    "https://www.hardcoregames.co",
+    "https://hardcoregames.co",
+    "https://srv936408.hstgr.cloud",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
