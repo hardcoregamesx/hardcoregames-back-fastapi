@@ -1393,7 +1393,67 @@ async def validate_coupon_for_product(
     discounted_items: list[DiscountedItem] = []
 
 
-    if is_valid and coupon.percentage_off and coupon.percentage_off > 0:
+    if is_valid and coupon.discount_type == "FIXED_AMOUNT" and coupon.fixed_amount and coupon.fixed_amount > 0:
+        # Flat-amount coupon (e.g. "bono" won from the roulette). The fixed
+        # amount is capped to the eligible subtotal and distributed
+        # proportionally across matching items, so discounted_items keeps the
+        # same per-line shape the frontend already expects from PERCENTAGE.
+        eligible_items: list[CartItem] = []
+        non_eligible_total = 0.0
+        eligible_total = 0.0
+
+        for item in payload.cart_items:
+            applies = await _product_matches_coupon_restrictions(
+                session=session,
+                coupon_id=coupon.id_coupon,
+                game_detail_id=item.product_id,
+            ) if item.product_id is not None else False
+
+            if applies:
+                eligible_items.append(item)
+                eligible_total += item.unit_price * item.quantity
+            else:
+                non_eligible_total += item.unit_price * item.quantity
+
+        res_gd_check = await session.execute(
+            select(CouponGameDetail.gamedetail_id)
+            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
+        )
+        coupon_has_restrictions = bool(res_gd_check.first())
+
+        if coupon_has_restrictions and not eligible_items:
+            return ValidateCouponResponse(
+                valid=False,
+                message="El cupón no aplica a los productos del carrito.",
+                code=coupon.name_coupon,
+                coupon_id=coupon.id_coupon,
+                total_before=total_before,
+                total_after=total_before,
+                discount_amount=0.0,
+                discounted_items=[],
+            )
+
+        actual_discount = min(coupon.fixed_amount, eligible_total) if eligible_total > 0 else 0.0
+
+        if actual_discount > 0:
+            discount_factor = actual_discount / eligible_total
+            discounted_total = 0.0
+            for item in eligible_items:
+                discounted_unit_price = item.unit_price * (1 - discount_factor)
+                discounted_total += discounted_unit_price * item.quantity
+                discounted_items.append(
+                    DiscountedItem(
+                        product_id=item.product_id,
+                        original_unit_price=item.unit_price,
+                        discounted_unit_price=discounted_unit_price,
+                        quantity=item.quantity,
+                    )
+                )
+            total_after = discounted_total + non_eligible_total
+        else:
+            total_after = total_before
+
+    elif is_valid and coupon.percentage_off and coupon.percentage_off > 0:
         discount_factor = (100 - coupon.percentage_off) / 100.0
         discounted_total = 0.0
 
@@ -1431,7 +1491,7 @@ async def validate_coupon_for_product(
             .where(CouponGameDetail.coupon_id == coupon.id_coupon)
         )
         coupon_has_restrictions = bool(res_gd_check.first())
-        
+
         if coupon_has_restrictions and not discounted_items:
             return ValidateCouponResponse(
                 valid=False,

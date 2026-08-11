@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, conint
 
 from ..database import get_session
-from ..models import User, UserCustomized
+from ..models import User, UserCustomized, PointTransaction
 from ..util.util_auth import get_current_user
 
 router = APIRouter(prefix="/users", tags=["user-points"])
@@ -30,11 +30,12 @@ class ExchangePointsResponse(BaseModel):
 
 
 async def _get_or_create_user_customized(
-    session: AsyncSession, current_user: User
+    session: AsyncSession, current_user: User, for_update: bool = False
 ) -> UserCustomized:
-    result = await session.execute(
-        select(UserCustomized).where(UserCustomized.user_id == current_user.id)
-    )
+    stmt = select(UserCustomized).where(UserCustomized.user_id == current_user.id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     profile = result.scalars().first()
 
     if profile is None:
@@ -81,7 +82,9 @@ async def exchange_points_for_balance(
     so the calculated value is truncated to an integer (e.g. 3 points -> 1 COP).
     """
 
-    profile = await _get_or_create_user_customized(session, current_user)
+    # Row lock: two concurrent exchange requests must not both read the same
+    # balance and both succeed (same reasoning as the roulette spin).
+    profile = await _get_or_create_user_customized(session, current_user, for_update=True)
 
     if profile.puntos < payload.points_to_exchange:
         raise HTTPException(
@@ -98,6 +101,18 @@ async def exchange_points_for_balance(
     # Update profile
     profile.puntos = points_before - exchanged_points
     profile.balance_exchange = balance_before + exchanged_amount_cop
+
+    session.add(
+        PointTransaction(
+            user_id=current_user.id,
+            delta=-exchanged_points,
+            balance_after=profile.puntos,
+            reason="EXCHANGE",
+            reference_type="balance_exchange",
+            reference_id=None,
+            description=f"Canje de {exchanged_points} puntos por ${exchanged_amount_cop} COP de saldo",
+        )
+    )
 
     await session.commit()
     await session.refresh(profile)

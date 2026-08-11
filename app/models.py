@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -213,6 +213,9 @@ class Coupon(Base):
     user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=True)
     percentage_off = Column(Integer, nullable=False, default=0)
     points_given = Column(Integer, nullable=False, default=0)
+    discount_type = Column(String(20), nullable=False, default="PERCENTAGE")
+    fixed_amount = Column(Integer, nullable=False, default=0)
+    source = Column(String(30), nullable=False, default="MANUAL")
 
     user = relationship("User", backref="coupons")
     # game_details M2M is accessed via CouponGameDetail junction below
@@ -276,3 +279,102 @@ class ProductAlias(Base):
     alias = Column(String(200), nullable=False)
     producto_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=False)
     created_at = Column(DateTime, default=datetime.now)
+
+
+# ============================================================================
+# HARDCORE REWARDS
+# ============================================================================
+
+class PointTransaction(Base):
+    """Ledger de movimientos de puntos. Toda alta o baja de UserCustomized.puntos
+    debe quedar registrada aqui (compra, giro de ruleta, canje, ajuste manual,
+    devolucion), para poder auditar el saldo en cualquier momento.
+    """
+
+    __tablename__ = "rewards_pointtransaction"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IN ('PURCHASE','ROULETTE_SPIN','COUPON','EXCHANGE','ADMIN_ADJUST','REFUND')",
+            name="rewards_pointtransaction_reason_check",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    delta = Column(Integer, nullable=False)
+    balance_after = Column(Integer, nullable=False)
+    reason = Column(String(30), nullable=False)
+    reference_type = Column(String(50), nullable=True)
+    reference_id = Column(String(100), nullable=True)
+    description = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    user = relationship("User", backref="point_transactions")
+
+
+class Roulette(Base):
+    """Una rueda configurable. Puede haber varias en el tiempo (ej. edicion
+    de temporada) pero solo una activa a la vez en la practica.
+    """
+
+    __tablename__ = "rewards_roulette"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    cost_points = Column(Integer, nullable=False, default=0)
+    max_spins_per_day = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class RoulettePrize(Base):
+    """Premio configurable de una rueda. El backend nunca expone `weight`
+    (probabilidad relativa) al cliente.
+    """
+
+    __tablename__ = "rewards_rouletteprize"
+    __table_args__ = (
+        CheckConstraint(
+            "prize_type IN ('COUPON_FIXED','COUPON_PERCENT','POINTS','NOTHING')",
+            name="rewards_rouletteprize_type_check",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    roulette_id = Column(Integer, ForeignKey("rewards_roulette.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    prize_type = Column(String(20), nullable=False)
+    value = Column(Integer, nullable=False, default=0)
+    weight = Column(Integer, nullable=False, default=1)
+    coupon_validity_minutes = Column(Integer, nullable=True)
+    min_purchase = Column(Integer, nullable=True)
+    max_per_user = Column(Integer, nullable=True)
+    stock = Column(Integer, nullable=True)
+    color = Column(String(20), nullable=False, default="#7c3aed")
+    display_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    roulette = relationship("Roulette", backref="prizes")
+
+
+class RouletteSpin(Base):
+    """Auditoria de cada giro: quien, cuando, que le toco y que cupon generó."""
+
+    __tablename__ = "rewards_roulettespin"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="rewards_roulettespin_idempotency_key_key"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    roulette_id = Column(Integer, ForeignKey("rewards_roulette.id"), nullable=False)
+    prize_id = Column(Integer, ForeignKey("rewards_rouletteprize.id"), nullable=False)
+    points_spent = Column(Integer, nullable=False, default=0)
+    coupon_id = Column(Integer, ForeignKey("coupons_coupon.id_coupon"), nullable=True)
+    idempotency_key = Column(String(100), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    user = relationship("User", backref="roulette_spins")
+    roulette = relationship("Roulette", backref="spins")
+    prize = relationship("RoulettePrize", backref="spins")
+    coupon = relationship("Coupon", backref="roulette_spin")

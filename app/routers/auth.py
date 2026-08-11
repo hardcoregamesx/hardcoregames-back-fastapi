@@ -6,7 +6,7 @@ from pydantic import BaseModel, EmailStr, constr, json
 from sqlalchemy.orm import selectinload
 from sqlalchemy import select 
 from app.database import get_session
-from app.models import LikedGame, Product, User, UserCustomized
+from app.models import LikedGame, Product, User, UserCustomized, PointTransaction
 from app.util.util_auth import (
     verify_password,
     create_access_token,
@@ -367,9 +367,11 @@ async def exchange_points(
     - All available points are exchanged in one operation.
     """
 
-    # Load or create the customized profile to access puntos
+    # Load or create the customized profile to access puntos. Row lock: two
+    # concurrent exchange requests must not both read the same balance and
+    # both succeed.
     result = await session.execute(
-        select(UserCustomized).where(UserCustomized.user_id == current_user.id)
+        select(UserCustomized).where(UserCustomized.user_id == current_user.id).with_for_update()
     )
     profile = result.scalars().first()
 
@@ -386,6 +388,17 @@ async def exchange_points(
     current_balance = getattr(profile, "balance_exchange", 0) or 0
     profile.balance_exchange = current_balance + amount_cop
     session.add(profile)
+    session.add(
+        PointTransaction(
+            user_id=current_user.id,
+            delta=-exchanged_points,
+            balance_after=0,
+            reason="EXCHANGE",
+            reference_type="balance_exchange",
+            reference_id=None,
+            description=f"Canje de {exchanged_points} puntos por ${amount_cop} COP de saldo",
+        )
+    )
     await session.commit()
 
     return PointsExchangeResponse(
