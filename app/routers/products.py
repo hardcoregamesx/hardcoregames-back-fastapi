@@ -638,34 +638,16 @@ async def get_week_offers(
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
 ):
-    """Return products that have active coupon offers created in the last week.
+    """Return products tagged as "oferta de la semana" (Product.oferta_semana=True).
 
-    A product is considered a "week offer" when there exists at least one
-    Coupon for that product such that:
-
-    - percentage_off > 0
-    - is_valid is True
-    - expiration_date > now
-    - created_at >= now - 7 days
-
-    Results are ordered by the coupon creation date (newest first) and
-    paginated with offset/limit. Each product includes the computed
-    ``price`` field (minimum non-zero GameDetail.precio).
+    Results are ordered by calification (desc) and paginated with
+    offset/limit, same convention as /favorites for `destacado`.
     """
-
-    now = datetime.utcnow()
-    week_ago = now - timedelta(days=7)
 
     query = (
         select(Product)
-        .join(Coupon, Coupon.product_id == Product.id_product)
-        .where(
-            Coupon.percentage_off > 0,
-            Coupon.is_valid.is_(True),
-            Coupon.expiration_date > now,
-            Coupon.created_at >= week_ago,
-        )
-        .order_by(Coupon.created_at.desc())
+        .where(Product.oferta_semana.is_(True))
+        .order_by(Product.calification.desc())
     )
 
     if offset:
