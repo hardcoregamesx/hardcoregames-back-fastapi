@@ -22,6 +22,7 @@ class Product(Base):
     puntos_venta = Column(Integer, default=0)
     puede_rentarse = Column(Boolean, default=True)
     destacado = Column(Boolean, default=False)
+    oferta_semana = Column(Boolean, default=False)
     type_id_id = Column(String(50), default="")
     tipo_juego_id = Column(String(50), default="")
     consoles = relationship("Consoles", secondary=products_products_consola, back_populates="products", lazy="selectin")

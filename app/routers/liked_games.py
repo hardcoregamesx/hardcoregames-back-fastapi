@@ -68,6 +68,7 @@ async def get_liked_games_by_user(user_id: int, session: AsyncSession = Depends(
                 "puntos_venta": lg.product.puntos_venta,
                 "puede_rentarse": lg.product.puede_rentarse,
                 "destacado": lg.product.destacado,
+                "oferta_semana": lg.product.oferta_semana,
                 "price": min_prices.get(lg.product.id_product),
                 "price_discount": min_discount_prices.get(lg.product.id_product),
             } if isinstance(lg.product, Product) else None,

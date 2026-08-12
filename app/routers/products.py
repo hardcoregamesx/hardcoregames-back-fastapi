@@ -514,6 +514,7 @@ async def list_products(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
@@ -569,6 +570,7 @@ async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession =
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
@@ -616,6 +618,7 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
@@ -687,6 +690,7 @@ async def get_week_offers(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
@@ -735,6 +739,7 @@ async def get_products_by_type(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -782,6 +787,7 @@ async def get_products_by_console(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id": p.type_id_id,
             "consoles": [
                 {"id_console": c.id_console}
@@ -829,6 +835,7 @@ async def get_products_by_game_type(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id": p.type_id_id,
             "consoles": [
                 {"id_console": c.id_console}
@@ -846,6 +853,8 @@ async def filter_products(
     type_id: int | None = None,
     console_id: str | None = None,
     game_type_id: int | None = None,
+    destacado: bool | None = None,
+    oferta_semana: bool | None = None,
     offset: int = 0,
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
@@ -857,6 +866,8 @@ async def filter_products(
         * type_id: filters by Product.type_id_id
         * console_id: filters by Consoles.id_console
         * game_type_id: filters by Product.tipo_juego_id
+        * destacado: filters by Product.destacado (admin-controlled "Destacado" flag)
+        * oferta_semana: filters by Product.oferta_semana (admin-controlled "Oferta de la Semana" flag)
     If any param is omitted or null, that filter is not applied.
     Supports offset/limit pagination.
     """
@@ -886,6 +897,12 @@ async def filter_products(
         console_ids = [int(c.strip()) for c in console_id.split(",") if c.strip()]
         conditions.append(Product.consoles.any(Consoles.id_console.in_(console_ids)))
 
+    if destacado is not None:
+        conditions.append(Product.destacado.is_(destacado))
+
+    if oferta_semana is not None:
+        conditions.append(Product.oferta_semana.is_(oferta_semana))
+
     if conditions:
         query = query.where(*conditions)
 
@@ -912,6 +929,7 @@ async def filter_products(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
@@ -986,6 +1004,7 @@ async def get_products_from_date(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
@@ -1216,6 +1235,7 @@ async def get_most_sold_products(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
@@ -1269,6 +1289,7 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
         "puntos_venta": getattr(product, "puntos_venta", None),
         "puede_rentarse": getattr(product, "puede_rentarse", None),
         "destacado": getattr(product, "destacado", None),
+        "oferta_semana": getattr(product, "oferta_semana", None),
         "stock": stock_sum,
         "precio_descuento": getattr(prices_game, "precio_descuento", None) if prices_game else None,
         "price": getattr(prices_game, "precio", None) if prices_game else None,
@@ -1324,6 +1345,7 @@ async def get_related_products(id_product: int, limit: int = 10, session: AsyncS
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
         }
         for p in related_products
     ]
