@@ -13,6 +13,7 @@ from .routers import coupons
 from .routers import shopping_car
 from .routers import user_points
 from .routers import rewards
+from .routers import sorteos
 from .database import Base, engine
 from .routers import tracking
 
@@ -68,4 +69,5 @@ app.include_router(shopping_car.router)
 app.include_router(coupons.router)
 app.include_router(user_points.router)
 app.include_router(rewards.router)
+app.include_router(sorteos.router)
 app.include_router(tracking.router)

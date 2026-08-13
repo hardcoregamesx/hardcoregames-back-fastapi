@@ -24,6 +24,7 @@ pwd_context = CryptContext(
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
 reset_serializer = URLSafeTimedSerializer(RESET_SECRET_KEY)
 
@@ -117,6 +118,32 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+async def get_current_user_optional(
+    token: str | None = Depends(oauth2_scheme_optional),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Igual que get_current_user, pero para endpoints publicos que deben
+    seguir respondiendo a visitantes sin sesion (ej. sorteos activos: la
+    leyenda y la imagen del premio son visibles sin login, el progreso de
+    participacion no). Cualquier token ausente o invalido devuelve None en
+    vez de lanzar 401.
+    """
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            return None
+    except JWTError:
+        return None
+
+    from sqlalchemy import select
+    result = await session.execute(select(User).filter(User.username == username))
+    return result.scalars().first()
 
 # ==============================================================================
 # FUNCIONES DE RESET DE CONTRASEÑA (STATELESS)

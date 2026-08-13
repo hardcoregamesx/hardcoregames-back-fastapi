@@ -169,6 +169,12 @@ class OrderBuy(Base):
     id_license = Column(Integer, ForeignKey("products_licenses.id_license"), nullable=True)
     id_console = Column(Integer, ForeignKey("products_consoles.id_console"), nullable=True)
 
+    # Snapshot del precio pagado al momento de la orden. Nullable porque las
+    # ordenes creadas antes de este campo no lo tienen -- no se puede
+    # reconstruir retroactivamente, y no hace falta: sorteos solo cuenta
+    # ordenes dentro del rango de fechas del sorteo (siempre posterior).
+    amount = Column(Integer, nullable=True)
+
     user = relationship("User", backref="orders_buy")
     product = relationship("Product", backref="orders")
 
@@ -379,3 +385,54 @@ class RouletteSpin(Base):
     roulette = relationship("Roulette", backref="spins")
     prize = relationship("RoulettePrize", backref="spins")
     coupon = relationship("Coupon", backref="roulette_spin")
+
+
+# ============================================================================
+# SORTEOS
+# ============================================================================
+
+class Sorteo(Base):
+    """Un sorteo configurable por el admin. La calificacion de participantes
+    NO se materializa en una tabla propia: se calcula en vivo contra
+    OrderBuy (status='completed', created_at dentro del rango del sorteo),
+    para que un reembolso posterior saque al cliente de la lista sin
+    necesidad de un job de sincronizacion.
+    """
+
+    __tablename__ = "sorteos_sorteo"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAFT','ACTIVE','FINISHED')",
+            name="sorteos_sorteo_status_check",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(150), nullable=False)
+    legend = Column(String(1000), nullable=False, default="")
+    prize_image_url = Column(String(500), nullable=True)
+    start_date = Column(DateTime(timezone=True), nullable=False)
+    end_date = Column(DateTime(timezone=True), nullable=False)
+    min_purchases = Column(Integer, nullable=True)
+    min_amount = Column(Integer, nullable=True)
+    require_both = Column(Boolean, nullable=False, default=False)
+    winners_count = Column(Integer, nullable=False, default=1)
+    status = Column(String(20), nullable=False, default="DRAFT")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class SorteoWinner(Base):
+    """Ganador de un sorteo ya ejecutado. drawn_at queda fijo en el momento
+    del sorteo aleatorio; el nombre/correo del usuario se resuelven en vivo
+    via join a auth_user, no se copian aqui.
+    """
+
+    __tablename__ = "sorteos_winner"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    sorteo_id = Column(Integer, ForeignKey("sorteos_sorteo.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    drawn_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    sorteo = relationship("Sorteo", backref="winners")
+    user = relationship("User", backref="sorteo_wins")

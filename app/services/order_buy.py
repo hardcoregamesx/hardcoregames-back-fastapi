@@ -25,6 +25,7 @@ from app.models import GameDetail, OrderBuy, SaleDetail
 # Status string constants kept in one place.
 STATUS_COMPLETADO = "completed"
 STATUS_CANCELADO = "cancelled"
+STATUS_REEMBOLSADO = "refunded"
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,11 @@ async def _sale_detail_exists(
 async def decrease_stock(session: AsyncSession, order: OrderBuy) -> None:
     """Validate stock availability and decrement it by 1 for the order.
 
+    Also snapshots the price paid onto ``order.amount`` (precio_descuento if
+    set, else precio) — this is the only point in the order lifecycle where
+    the matching GameDetail is already resolved, so it doubles as the
+    source of truth for "valor de compras" thresholds in sorteos.
+
     Must be called within the same database transaction as the order creation
     so that a validation failure here causes the whole operation to be rolled
     back by the caller.
@@ -105,6 +111,9 @@ async def decrease_stock(session: AsyncSession, order: OrderBuy) -> None:
         )
     game_detail.stock -= 1
     session.add(game_detail)
+
+    order.amount = game_detail.precio_descuento or game_detail.precio
+    session.add(order)
 
 
 async def restore_stock(session: AsyncSession, order: OrderBuy) -> None:
@@ -177,8 +186,12 @@ async def on_status_transition(
 ) -> None:
     """Side-effects to execute when an order's status changes.
 
-    * "Completado": creates a SaleDetail record (idempotent).
-    * "Cancelado":  restores the GameDetail stock (only on first transition).
+    * "Completado":  creates a SaleDetail record (idempotent).
+    * "Cancelado":   restores the GameDetail stock (only on first transition).
+    * "Reembolsado": restores the GameDetail stock (only on first transition).
+                      A refund normally happens after a completed order, but
+                      stock is decremented at creation time regardless of
+                      status, so the restore logic is identical to a cancel.
 
     *IMPORTANT*: this function reads ``order.status`` as the *previous* status
     to detect a genuine transition.  It must be called BEFORE ``order.status``
@@ -193,4 +206,7 @@ async def on_status_transition(
         await create_sale_detail(session, order)
 
     if new_status == STATUS_CANCELADO and previous_status != STATUS_CANCELADO:
+        await restore_stock(session, order)
+
+    if new_status == STATUS_REEMBOLSADO and previous_status != STATUS_REEMBOLSADO:
         await restore_stock(session, order)
