@@ -646,6 +646,7 @@ async def get_week_offers(
 
     query = (
         select(Product)
+        .options(selectinload(Product.consoles))
         .where(Product.oferta_semana.is_(True))
         .order_by(Product.calification.desc())
     )
@@ -677,6 +678,10 @@ async def get_week_offers(
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
         }
         for p in products
     ]
