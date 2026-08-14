@@ -1,33 +1,34 @@
 """Calculo de progreso de participacion en un sorteo.
 
 La calificacion de un usuario nunca se materializa en una tabla propia:
-se recalcula en vivo contra SaleDetail (la compra real del storefront,
-creada por confirm_sale en el backend Django) cada vez que se pide. Esto
-es lo que permite que un reembolso o cancelacion posterior a que un
-cliente ya hubiera calificado lo saque de la lista automaticamente, sin
-job de sincronizacion ni riesgo de que quede desactualizado.
+se recalcula en vivo contra Transactions (el dinero real cobrado por
+checkout, via Bold o el ePayco legacy) cada vez que se pide. Esto es lo
+que permite que un reembolso o cancelacion posterior a que un cliente ya
+hubiera calificado lo saque de la lista automaticamente, sin job de
+sincronizacion ni riesgo de que quede desactualizado.
 
-OJO: no se calcula contra OrderBuy/orders_buy -- esa tabla esta
-practicamente vacia en produccion y su campo amount nunca se llena
-(nada del flujo de compra real la escribe). El monto se obtiene de
-GameDetail.precio / precio_descuento a traves de la combinacion
-comprada, mismo criterio que products/productSerializers.py en Django
-(precio_descuento cuando > 0, si no precio).
+Una "compra" es una transaccion (un checkout), no una linea de producto:
+un carrito con 2 productos cuenta como 1 compra, no 2. El monto es lo que
+realmente se cobro (neto de saldo/cupon aplicado), no el precio de
+catalogo -- por eso NO se calcula contra SaleDetail (la compra real, pero
+sin monto) ni contra OrderBuy/orders_buy (tabla practicamente vacia en
+produccion, con amount que nunca se llena).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import GameDetail, SaleDetail, Sorteo
+from app.models import Sorteo, Transactions
 
-_EFFECTIVE_PRICE = case(
-    (GameDetail.precio_descuento > 0, GameDetail.precio_descuento),
-    else_=GameDetail.precio,
-)
+# Estados de pago exitoso vistos en produccion entre los dos gateways que ha
+# usado la tienda (Bold via webhook/redirect, y el ePayco legacy que todavia
+# deja filas). Verificado con
+# SELECT status, COUNT(*) FROM products_transactions GROUP BY status.
+TRANSACTION_SUCCESS_STATUSES = ("approved", "SALE_APPROVED", "aceptada", "accepted")
 
 
 @dataclass
@@ -40,14 +41,13 @@ class SorteoProgress:
 async def compute_progress(session: AsyncSession, sorteo: Sorteo, user_id: int) -> SorteoProgress:
     result = await session.execute(
         select(
-            func.count(SaleDetail.id_sale_detail),
-            func.coalesce(func.sum(_EFFECTIVE_PRICE), 0),
-        )
-        .join(GameDetail, GameDetail.id_game_detail == SaleDetail.combinacion_id)
-        .where(
-            SaleDetail.usuario_id == user_id,
-            SaleDetail.fecha_venta >= sorteo.start_date,
-            SaleDetail.fecha_venta <= sorteo.end_date,
+            func.count(Transactions.id_transaction),
+            func.coalesce(func.sum(Transactions.amount), 0),
+        ).where(
+            Transactions.user_id == user_id,
+            Transactions.status.in_(TRANSACTION_SUCCESS_STATUSES),
+            Transactions.date_transaction >= sorteo.start_date,
+            Transactions.date_transaction <= sorteo.end_date,
         )
     )
     purchases_count, amount_sum = result.one()

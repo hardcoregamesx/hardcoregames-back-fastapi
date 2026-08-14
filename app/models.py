@@ -196,6 +196,29 @@ class SaleDetail(Base):
     combinacion = relationship("GameDetail", backref="sale_details")
 
 
+class Transactions(Base):
+    """El dinero realmente cobrado por checkout (Bold o el ePayco legacy),
+    no el precio de catalogo de lo comprado. Una fila = un checkout (puede
+    incluir varios productos), creada en 'pendiente' antes de cobrar y
+    actualizada in-place al confirmarse el pago -- no hay filas duplicadas
+    por reintento. Ver app/services/sorteos.py."""
+
+    __tablename__ = "products_transactions"
+
+    id_transaction = Column(Integer, primary_key=True, autoincrement=True)
+    date_transaction = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    status = Column(String(100), nullable=False)
+    amount = Column(Integer, nullable=False)
+    payment_id = Column(String(100), nullable=False)
+    ref_payco = Column(String(100), nullable=False)
+    id_invoice = Column(String(100), nullable=False)
+    # La columna real es user_id_id: el campo Django se llama "user_id" y es
+    # un ForeignKey, asi que Django le agrega el sufijo "_id" de FK encima.
+    user_id = Column("user_id_id", Integer, ForeignKey("auth_user.id"), nullable=False)
+
+    user = relationship("User", backref="transactions")
+
+
 class ShoppingCar(Base):
     __tablename__ = "products_shoppingcar"
 
@@ -394,10 +417,10 @@ class RouletteSpin(Base):
 class Sorteo(Base):
     """Un sorteo configurable por el admin. La calificacion de participantes
     NO se materializa en una tabla propia: se calcula en vivo contra
-    SaleDetail (fecha_venta dentro del rango del sorteo, monto via
-    GameDetail.precio/precio_descuento de la combinacion comprada), para
-    que un reembolso posterior saque al cliente de la lista sin necesidad
-    de un job de sincronizacion. Ver app/services/sorteos.py.
+    Transactions (date_transaction dentro del rango del sorteo, amount =
+    lo realmente cobrado por checkout, no el precio de catalogo), para que
+    un reembolso posterior saque al cliente de la lista sin necesidad de
+    un job de sincronizacion. Ver app/services/sorteos.py.
     """
 
     __tablename__ = "sorteos_sorteo"
