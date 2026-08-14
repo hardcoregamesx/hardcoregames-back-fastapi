@@ -1266,19 +1266,23 @@ async def get_recommended_products(
         purchased_ids = {row[0] for row in purchased_result.all() if row[0] is not None}
 
         if purchased_ids:
+            # tipo_juego_id esta declarado String(50) en el modelo pero la
+            # columna real en Postgres es integer (igual que type_id_id) --
+            # sin el cast, "!=" o "IN" contra un literal de texto revientan
+            # con UndefinedFunctionError. Mismo patron que /by-game-type.
             categories_result = await session.execute(
-                select(Product.tipo_juego_id)
-                .where(Product.id_product.in_(purchased_ids), Product.tipo_juego_id != "")
+                select(cast(Product.tipo_juego_id, Integer))
+                .where(Product.id_product.in_(purchased_ids), Product.tipo_juego_id.isnot(None))
                 .distinct()
             )
-            categories = {row[0] for row in categories_result.all() if row[0]}
+            categories = {row[0] for row in categories_result.all() if row[0] is not None}
 
             if categories:
                 query = (
                     select(Product)
                     .options(selectinload(Product.consoles))
                     .where(
-                        Product.tipo_juego_id.in_(categories),
+                        cast(Product.tipo_juego_id, Integer).in_(categories),
                         Product.id_product.notin_(purchased_ids),
                     )
                     .order_by(Product.calification.desc())
