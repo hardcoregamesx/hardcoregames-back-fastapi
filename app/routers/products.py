@@ -22,7 +22,7 @@ from ..models import (
     CouponRedemption,
     ProductAlias,
 )
-from ..util.util_auth import get_current_user
+from ..util.util_auth import get_current_user, get_current_user_optional
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -1228,6 +1228,96 @@ async def get_most_sold_products(
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
             "sales_count": int(sales_counts.get(p.id_product, 0)),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+
+    return {"data": data}
+
+
+@router.get("/recommended")
+async def get_recommended_products(
+    limit: int = 20,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    """Personalized "recomendados para ti" for the home page.
+
+    - Usuario logueado con compras: productos de la misma categoria
+      (``tipo_juego_id``, mismo criterio que ``/{id_product}/related``) de
+      lo que ya compro (via ``products_saledetail``, la fuente real de
+      "que compro" un usuario), excluyendo lo que ya tiene.
+    - Anonimo, o logueado sin compras, o sin productos restantes en sus
+      categorias: seleccion aleatoria (cambia en cada request, asi que
+      varia por cada inicio de sesion).
+    """
+
+    products: list[Product] = []
+
+    if current_user is not None:
+        purchased_result = await session.execute(
+            select(SaleDetail.producto_id).where(SaleDetail.usuario_id == current_user.id)
+        )
+        purchased_ids = {row[0] for row in purchased_result.all() if row[0] is not None}
+
+        if purchased_ids:
+            categories_result = await session.execute(
+                select(Product.tipo_juego_id)
+                .where(Product.id_product.in_(purchased_ids), Product.tipo_juego_id != "")
+                .distinct()
+            )
+            categories = {row[0] for row in categories_result.all() if row[0]}
+
+            if categories:
+                query = (
+                    select(Product)
+                    .options(selectinload(Product.consoles))
+                    .where(
+                        Product.tipo_juego_id.in_(categories),
+                        Product.id_product.notin_(purchased_ids),
+                    )
+                    .order_by(Product.calification.desc())
+                )
+                if offset:
+                    query = query.offset(offset)
+                query = query.limit(limit)
+                result = await session.execute(query)
+                products = result.scalars().all()
+
+    if not products:
+        query = (
+            select(Product)
+            .options(selectinload(Product.consoles))
+            .order_by(func.random())
+            .limit(limit)
+        )
+        result = await session.execute(query)
+        products = result.scalars().all()
+
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
+            "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
