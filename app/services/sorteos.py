@@ -1,22 +1,33 @@
 """Calculo de progreso de participacion en un sorteo.
 
 La calificacion de un usuario nunca se materializa en una tabla propia:
-se recalcula en vivo contra OrderBuy cada vez que se pide. Esto es lo que
-permite que un reembolso o cancelacion posterior a que un cliente ya
-hubiera calificado lo saque de la lista automaticamente, sin job de
-sincronizacion ni riesgo de que quede desactualizado.
+se recalcula en vivo contra SaleDetail (la compra real del storefront,
+creada por confirm_sale en el backend Django) cada vez que se pide. Esto
+es lo que permite que un reembolso o cancelacion posterior a que un
+cliente ya hubiera calificado lo saque de la lista automaticamente, sin
+job de sincronizacion ni riesgo de que quede desactualizado.
+
+OJO: no se calcula contra OrderBuy/orders_buy -- esa tabla esta
+practicamente vacia en produccion y su campo amount nunca se llena
+(nada del flujo de compra real la escribe). El monto se obtiene de
+GameDetail.precio / precio_descuento a traves de la combinacion
+comprada, mismo criterio que products/productSerializers.py en Django
+(precio_descuento cuando > 0, si no precio).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import OrderBuy, Sorteo
+from app.models import GameDetail, SaleDetail, Sorteo
 
-STATUS_COMPLETADO = "completed"
+_EFFECTIVE_PRICE = case(
+    (GameDetail.precio_descuento > 0, GameDetail.precio_descuento),
+    else_=GameDetail.precio,
+)
 
 
 @dataclass
@@ -29,13 +40,14 @@ class SorteoProgress:
 async def compute_progress(session: AsyncSession, sorteo: Sorteo, user_id: int) -> SorteoProgress:
     result = await session.execute(
         select(
-            func.count(OrderBuy.id_order),
-            func.coalesce(func.sum(OrderBuy.amount), 0),
-        ).where(
-            OrderBuy.user_id == user_id,
-            OrderBuy.status == STATUS_COMPLETADO,
-            OrderBuy.created_at >= sorteo.start_date,
-            OrderBuy.created_at <= sorteo.end_date,
+            func.count(SaleDetail.id_sale_detail),
+            func.coalesce(func.sum(_EFFECTIVE_PRICE), 0),
+        )
+        .join(GameDetail, GameDetail.id_game_detail == SaleDetail.combinacion_id)
+        .where(
+            SaleDetail.usuario_id == user_id,
+            SaleDetail.fecha_venta >= sorteo.start_date,
+            SaleDetail.fecha_venta <= sorteo.end_date,
         )
     )
     purchases_count, amount_sum = result.one()

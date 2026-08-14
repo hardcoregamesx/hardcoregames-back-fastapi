@@ -394,9 +394,10 @@ class RouletteSpin(Base):
 class Sorteo(Base):
     """Un sorteo configurable por el admin. La calificacion de participantes
     NO se materializa en una tabla propia: se calcula en vivo contra
-    OrderBuy (status='completed', created_at dentro del rango del sorteo),
-    para que un reembolso posterior saque al cliente de la lista sin
-    necesidad de un job de sincronizacion.
+    SaleDetail (fecha_venta dentro del rango del sorteo, monto via
+    GameDetail.precio/precio_descuento de la combinacion comprada), para
+    que un reembolso posterior saque al cliente de la lista sin necesidad
+    de un job de sincronizacion. Ver app/services/sorteos.py.
     """
 
     __tablename__ = "sorteos_sorteo"
