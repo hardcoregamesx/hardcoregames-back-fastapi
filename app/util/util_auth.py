@@ -9,7 +9,7 @@ from itsdangerous import URLSafeTimedSerializer
 import os
 
 from app.database import get_session
-from app.models import User
+from app.models import User, UserCustomized
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-CHANGE-IN-PRODUCTION")
 ALGORITHM = "HS256"
@@ -118,6 +118,30 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+async def get_current_complete_user(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Igual que get_current_user, pero además rechaza cuentas creadas por el
+    checkout de invitado que todavía no completaron su registro (nombre y
+    contraseña propia). Usarla en endpoints que otorgan valor (ruleta, canje
+    de puntos) para que no se puedan generar cuentas gratis solo con un
+    correo y explotarlos.
+    """
+    from sqlalchemy import select
+    result = await session.execute(
+        select(UserCustomized).filter(UserCustomized.user_id == current_user.id)
+    )
+    profile = result.scalars().first()
+    if profile is not None and profile.is_guest_account:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Completa tu registro para usar la ruleta y canjear puntos.",
+        )
+    return current_user
 
 
 async def get_current_user_optional(

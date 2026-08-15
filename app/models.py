@@ -138,6 +138,7 @@ class UserCustomized(Base):
     avatar = Column(String(500), nullable=False, default="")
     puntos = Column(Integer, nullable=False, default=0)
     balance_exchange = Column(Integer, nullable=False, default=0)
+    is_guest_account = Column(Boolean, nullable=False, default=False)
 
     user = relationship("User", backref="custom_profile", lazy="joined")
 

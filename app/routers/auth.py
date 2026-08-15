@@ -14,6 +14,7 @@ from app.util.util_auth import (
     generate_reset_token,
     RESET_TOKEN_EXPIRE_SECONDS,
     get_current_user,
+    get_current_complete_user,
 )
 from app.repositories import auth as auth_repo
 
@@ -106,6 +107,17 @@ async def login(
 ):
     user = await auth_repo.get_user_by_username(session, username=form_data.username)
     if not user or not verify_password(form_data.password, user.password):
+        if user:
+            profile_result = await session.execute(
+                select(UserCustomized).where(UserCustomized.user_id == user.id)
+            )
+            profile = profile_result.scalars().first()
+            if profile is not None and profile.is_guest_account:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Ya tienes compras registradas con este correo. Completa tu registro para ponerle una contraseña.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -357,7 +369,7 @@ async def patch_profile(
 
 @router.post("/exchange-points", response_model=PointsExchangeResponse)
 async def exchange_points(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_complete_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Exchange user points for COP.

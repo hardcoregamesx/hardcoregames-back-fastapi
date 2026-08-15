@@ -17,7 +17,7 @@ from ..models import (
     RoulettePrize,
     RouletteSpin,
 )
-from ..util.util_auth import get_current_user
+from ..util.util_auth import get_current_user, get_current_complete_user
 
 router = APIRouter(prefix="/rewards", tags=["rewards"])
 
@@ -189,7 +189,7 @@ class SpinRequest(BaseModel):
 async def spin_roulette(
     payload: SpinRequest,
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_complete_user),
 ):
     # Safe retry: if this idempotency_key was already processed, return the
     # same result instead of charging the user again.
