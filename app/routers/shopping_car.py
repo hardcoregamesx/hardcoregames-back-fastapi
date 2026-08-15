@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models import ShoppingCar, User, GameDetail
+from app.models import ShoppingCar, User, GameDetail, Product, Consoles, Licenses
 from app.util.util_auth import get_current_user
 
 router = APIRouter(prefix="/shopping-car", tags=["shopping-car"])
@@ -25,9 +25,52 @@ class ShoppingCarRead(BaseModel):
     product_id: int
     estado: bool
     product_price: int | None = None
+    # Display data resuelta en el servidor para que el carrito se vea igual
+    # en cualquier dispositivo, sin depender del cache local
+    # "cart_combinations" que solo existe en el navegador donde se agrego
+    # el producto.
+    title: str | None = None
+    image: str | None = None
+    desc_console: str | None = None
+    desc_licence: str | None = None
+    base_game_id: int | None = None
 
     class Config:
         orm_mode = True
+
+
+def _shopping_car_display_query():
+    return (
+        select(
+            ShoppingCar,
+            GameDetail.precio,
+            Product.title,
+            Product.image,
+            Consoles.descripcion.label("desc_console"),
+            Licenses.descripcion.label("desc_licence"),
+            GameDetail.producto_id,
+        )
+        .select_from(ShoppingCar)
+        .join(GameDetail, ShoppingCar.product_id == GameDetail.id_game_detail)
+        .join(Product, GameDetail.producto_id == Product.id_product, isouter=True)
+        .join(Consoles, GameDetail.consola_id == Consoles.id_console, isouter=True)
+        .join(Licenses, GameDetail.licencia_id == Licenses.id_license, isouter=True)
+    )
+
+
+def _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id) -> ShoppingCarRead:
+    return ShoppingCarRead(
+        id_shopping_car=item.id_shopping_car,
+        user_id=item.user_id,
+        product_id=item.product_id,
+        estado=item.estado,
+        product_price=price,
+        title=title,
+        image=image,
+        desc_console=desc_console,
+        desc_licence=desc_licence,
+        base_game_id=base_game_id,
+    )
 
 
 @router.get("/", response_model=list[ShoppingCarRead])
@@ -37,10 +80,7 @@ async def list_shopping_car(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    query = (
-        select(ShoppingCar, GameDetail.precio)
-        .join(GameDetail, ShoppingCar.product_id == GameDetail.id_game_detail)
-    )
+    query = _shopping_car_display_query()
 
     # if user_id is not provided, default to current user
     effective_user_id = user_id if user_id is not None else current_user.id
@@ -53,14 +93,8 @@ async def list_shopping_car(
     rows = result.all()
 
     return [
-        ShoppingCarRead(
-            id_shopping_car=item.id_shopping_car,
-            user_id=item.user_id,
-            product_id=item.product_id,
-            estado=item.estado,
-            product_price=price,
-        )
-        for item, price in rows
+        _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
+        for item, price, title, image, desc_console, desc_licence, base_game_id in rows
     ]
 
 
@@ -71,25 +105,17 @@ async def get_shopping_car_item(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(ShoppingCar, GameDetail.precio)
-        .join(GameDetail, ShoppingCar.product_id == GameDetail.id_game_detail)
-        .where(ShoppingCar.id_shopping_car == shopping_car_id)
+        _shopping_car_display_query().where(ShoppingCar.id_shopping_car == shopping_car_id)
     )
     row = result.first()
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-    item, price = row
+    item, price, title, image, desc_console, desc_licence, base_game_id = row
     if item.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-    return ShoppingCarRead(
-        id_shopping_car=item.id_shopping_car,
-        user_id=item.user_id,
-        product_id=item.product_id,
-        estado=item.estado,
-        product_price=price,
-    )
+    return _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
 
 
 @router.post("/", response_model=ShoppingCarRead, status_code=status.HTTP_201_CREATED)
@@ -120,18 +146,12 @@ async def create_shopping_car_item(
     await session.commit()
     await session.refresh(item)
 
-    price_result = await session.execute(
-        select(GameDetail.precio).where(GameDetail.id_game_detail == item.product_id)
+    result = await session.execute(
+        _shopping_car_display_query().where(ShoppingCar.id_shopping_car == item.id_shopping_car)
     )
-    price = price_result.scalar()
+    _, price, title, image, desc_console, desc_licence, base_game_id = result.first()
 
-    return ShoppingCarRead(
-        id_shopping_car=item.id_shopping_car,
-        user_id=item.user_id,
-        product_id=item.product_id,
-        estado=item.estado,
-        product_price=price,
-    )
+    return _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
 
 
 @router.put("/{product_id}", response_model=ShoppingCarRead)
@@ -155,18 +175,12 @@ async def update_shopping_car_item(
     await session.commit()
     await session.refresh(item)
 
-    price_result = await session.execute(
-        select(GameDetail.precio).where(GameDetail.id_game_detail == item.product_id)
+    result = await session.execute(
+        _shopping_car_display_query().where(ShoppingCar.id_shopping_car == item.id_shopping_car)
     )
-    price = price_result.scalar()
+    _, price, title, image, desc_console, desc_licence, base_game_id = result.first()
 
-    return ShoppingCarRead(
-        id_shopping_car=item.id_shopping_car,
-        user_id=item.user_id,
-        product_id=item.product_id,
-        estado=item.estado,
-        product_price=price,
-    )
+    return _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
 
 
 @router.delete("/{shopping_car_id}", status_code=status.HTTP_204_NO_CONTENT)
