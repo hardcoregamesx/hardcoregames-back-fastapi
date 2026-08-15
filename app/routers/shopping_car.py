@@ -44,6 +44,7 @@ def _shopping_car_display_query():
         select(
             ShoppingCar,
             GameDetail.precio,
+            GameDetail.precio_descuento,
             Product.title,
             Product.image,
             Consoles.descripcion.label("desc_console"),
@@ -58,13 +59,22 @@ def _shopping_car_display_query():
     )
 
 
-def _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id) -> ShoppingCarRead:
+def _effective_price(precio: int | None, precio_descuento: int | None) -> int | None:
+    # Misma regla que ya usa la pagina de producto al agregar al carrito
+    # (variable "M" en el bundle): la oferta solo cuenta si es mayor que 0
+    # y menor que el precio de lista.
+    if precio_descuento and precio and 0 < precio_descuento < precio:
+        return precio_descuento
+    return precio
+
+
+def _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id) -> ShoppingCarRead:
     return ShoppingCarRead(
         id_shopping_car=item.id_shopping_car,
         user_id=item.user_id,
         product_id=item.product_id,
         estado=item.estado,
-        product_price=price,
+        product_price=_effective_price(precio, precio_descuento),
         title=title,
         image=image,
         desc_console=desc_console,
@@ -93,8 +103,8 @@ async def list_shopping_car(
     rows = result.all()
 
     return [
-        _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
-        for item, price, title, image, desc_console, desc_licence, base_game_id in rows
+        _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
+        for item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id in rows
     ]
 
 
@@ -111,11 +121,11 @@ async def get_shopping_car_item(
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-    item, price, title, image, desc_console, desc_licence, base_game_id = row
+    item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id = row
     if item.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-    return _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
+    return _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
 
 
 @router.post("/", response_model=ShoppingCarRead, status_code=status.HTTP_201_CREATED)
@@ -149,9 +159,9 @@ async def create_shopping_car_item(
     result = await session.execute(
         _shopping_car_display_query().where(ShoppingCar.id_shopping_car == item.id_shopping_car)
     )
-    _, price, title, image, desc_console, desc_licence, base_game_id = result.first()
+    _, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id = result.first()
 
-    return _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
+    return _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
 
 
 @router.put("/{product_id}", response_model=ShoppingCarRead)
@@ -178,9 +188,9 @@ async def update_shopping_car_item(
     result = await session.execute(
         _shopping_car_display_query().where(ShoppingCar.id_shopping_car == item.id_shopping_car)
     )
-    _, price, title, image, desc_console, desc_licence, base_game_id = result.first()
+    _, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id = result.first()
 
-    return _build_shopping_car_read(item, price, title, image, desc_console, desc_licence, base_game_id)
+    return _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
 
 
 @router.delete("/{shopping_car_id}", status_code=status.HTTP_204_NO_CONTENT)
