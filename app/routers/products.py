@@ -1374,6 +1374,8 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
         "stock": stock_sum,
         "precio_descuento": getattr(prices_game, "precio_descuento", None) if prices_game else None,
         "price": getattr(prices_game, "precio", None) if prices_game else None,
+        "type_id_id": getattr(product, "type_id_id", None),
+        "tipo_juego_id": getattr(product, "tipo_juego_id", None),
         "consoles": [
             {"id_console": c.id_console}
             for c in getattr(product, "consoles", []) or []
