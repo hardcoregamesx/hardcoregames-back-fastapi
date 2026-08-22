@@ -16,6 +16,7 @@ from .routers import rewards
 from .routers import sorteos
 from .database import Base, engine
 from .routers import tracking
+from .routers import physical_products
 
 app = FastAPI(title="Reactive FastAPI Microservice")
 
@@ -61,6 +62,7 @@ async def health_check():
     print("[health] backend is alive")
     return {"status": "ok"}
 
+app.include_router(physical_products.router)
 app.include_router(products.router)
 app.include_router(auth.router)
 app.include_router(liked_games.router)
