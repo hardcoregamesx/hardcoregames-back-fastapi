@@ -7,8 +7,8 @@ exportado, se limpia y se cachea en memoria un rato para no golpear a Google
 en cada visita a la página.
 
 Estos productos NO pasan por el checkout/carrito digital ni por Bold: el
-pago es en efectivo o transferencia, coordinado por WhatsApp. Por eso el
-recargo de transferencia se calcula aquí y se sirve ya resuelto.
+pago es en efectivo, transferencia o Sistecrédito/Addi, coordinado por
+WhatsApp. Por eso los recargos se calculan aquí y se sirven ya resueltos.
 """
 
 import csv
@@ -30,10 +30,29 @@ CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&
 TRANSFER_SURCHARGE = 50_000
 TRANSFER_SURCHARGE_MIN_PRICE = 600_000
 
+# Sistecrédito/Addi: financiación, recargo fijo sobre el valor de efectivo
+# para todos los productos (sin umbral de precio mínimo).
+SISTECREDITO_MULTIPLIER = 1.20
+
 _CACHE_TTL_SECONDS = 300
 _cache: dict = {"data": None, "fetched_at": 0.0}
 
 _SOLD_OUT_RE = re.compile(r"AGOTAD|VENDID", re.IGNORECASE)
+
+# El sheet no tiene columna de categoria: se agrupan los productos por los
+# encabezados de seccion que ya trae ("CONTROLES Y ACCESORIOS XBOX",
+# "JUEGOS FISICOS - ..."). Antes del primer encabezado no hay categoria
+# explicita, asi que esas filas (sobre todo consolas, con algunos
+# accesorios sueltos) se clasifican por palabras clave del nombre.
+_ACCESSORY_KEYWORDS = (
+    # Solo frases que describen el PRODUCTO en sí, no un bono incluido: en
+    # el bloque inicial (sin encabezado) casi toda consola menciona "un
+    # control", "joycon" (garantía) o "vidrio templado" (obsequio) como
+    # parte del combo, no como lo que se vende. Los accesorios sueltos de
+    # verdad viven bajo "CONTROLES Y ACCESORIOS *", que ya se detecta por
+    # encabezado de sección.
+    "instalación de chip", "instalacion de chip", "watch onn", "dispositivo onn",
+)
 
 
 def _parse_price(raw: str) -> int | None:
@@ -69,14 +88,28 @@ def _is_section_row(product: str, price: str, status: str, location: str) -> boo
     return False
 
 
+def _leading_block_category(product_name: str) -> str:
+    lowered = product_name.lower()
+    if any(kw in lowered for kw in _ACCESSORY_KEYWORDS):
+        return "ACCESORIO"
+    return "CONSOLA"
+
+
 def _parse_csv(text: str) -> list[dict]:
     rows = list(csv.reader(io.StringIO(text)))
     products = []
+    category_state = "CONSOLA"  # default hasta el primer encabezado de seccion
+
     for row in rows[1:]:
         row = row + [""] * (7 - len(row))  # tolera filas más cortas
         product, price_raw, status_raw, has_box_raw, location_raw, image_raw, platform_raw = row[:7]
 
         if _is_section_row(product, price_raw, status_raw, location_raw):
+            header = product.strip().upper()
+            if header.startswith("CONTROLES Y ACCESORIOS"):
+                category_state = "ACCESORIO"
+            elif header.startswith("JUEGOS F"):  # "JUEGOS FÍSICOS - ..." (con o sin tilde)
+                category_state = "JUEGO"
             continue
 
         sold_out = bool(_SOLD_OUT_RE.search(f"{price_raw} {status_raw}"))
@@ -86,9 +119,15 @@ def _parse_csv(text: str) -> list[dict]:
             continue
 
         price_transfer = None
+        price_sistecredito = None
         if price_cash is not None:
             surcharge = TRANSFER_SURCHARGE if price_cash > TRANSFER_SURCHARGE_MIN_PRICE else 0
             price_transfer = price_cash + surcharge
+            price_sistecredito = int(round(price_cash * SISTECREDITO_MULTIPLIER))
+
+        category = (
+            _leading_block_category(product) if category_state == "CONSOLA" else category_state
+        )
 
         products.append(
             {
@@ -96,10 +135,12 @@ def _parse_csv(text: str) -> list[dict]:
                 "available": not sold_out,
                 "price_cash": price_cash,
                 "price_transfer": price_transfer,
+                "price_sistecredito": price_sistecredito,
                 "condition": status_raw.strip() or None,
                 "has_box": has_box_raw.strip() or None,
                 "location": location_raw.strip() or None,
                 "platform": platform_raw.strip() or None,
+                "category": category,
                 "image_url": _clean_image(image_raw),
             }
         )
