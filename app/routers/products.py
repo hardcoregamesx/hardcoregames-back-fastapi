@@ -515,7 +515,7 @@ async def list_products(
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
             "oferta_semana": p.oferta_semana,
-            "type_id": p.type_id_id,
+            "type_id_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
@@ -775,7 +775,7 @@ async def get_products_by_console(
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
             "oferta_semana": p.oferta_semana,
-            "type_id": p.type_id_id,
+            "type_id_id": p.type_id_id,
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -823,7 +823,7 @@ async def get_products_by_game_type(
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
             "oferta_semana": p.oferta_semana,
-            "type_id": p.type_id_id,
+            "type_id_id": p.type_id_id,
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -1164,7 +1164,7 @@ async def search_products(q: str, offset: int = 0, limit: int = 20, use_trgm: bo
             "image": p.image,
             "calification": p.calification,
             "puntos_venta": p.puntos_venta,
-            "type_id": p.type_id_id,
+            "type_id_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
