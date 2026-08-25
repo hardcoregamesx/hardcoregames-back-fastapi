@@ -34,6 +34,14 @@ class ShoppingCarRead(BaseModel):
     desc_console: str | None = None
     desc_licence: str | None = None
     base_game_id: int | None = None
+    # IDs crudos de la combinacion (mismos nombres/valores que devuelve
+    # /products/combination-price/{id}): el checkout los usa para armar la
+    # descripcion que se envia a Bold. Sin esto el checkout desde el carrito
+    # mandaba "Titulo | - | - | -" aunque desc_console/desc_licence si
+    # llegaran bien.
+    consola: int | None = None
+    licencia: int | None = None
+    duracion_dias_alquiler: int | None = None
 
     class Config:
         orm_mode = True
@@ -50,6 +58,9 @@ def _shopping_car_display_query():
             Consoles.descripcion.label("desc_console"),
             Licenses.descripcion.label("desc_licence"),
             GameDetail.producto_id,
+            GameDetail.consola_id,
+            GameDetail.licencia_id,
+            GameDetail.duracion_dias_alquiler,
         )
         .select_from(ShoppingCar)
         .join(GameDetail, ShoppingCar.product_id == GameDetail.id_game_detail)
@@ -68,7 +79,19 @@ def _effective_price(precio: int | None, precio_descuento: int | None) -> int | 
     return precio
 
 
-def _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id) -> ShoppingCarRead:
+def _build_shopping_car_read(
+    item,
+    precio,
+    precio_descuento,
+    title,
+    image,
+    desc_console,
+    desc_licence,
+    base_game_id,
+    consola_id,
+    licencia_id,
+    duracion_dias_alquiler,
+) -> ShoppingCarRead:
     return ShoppingCarRead(
         id_shopping_car=item.id_shopping_car,
         user_id=item.user_id,
@@ -80,6 +103,9 @@ def _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_
         desc_console=desc_console,
         desc_licence=desc_licence,
         base_game_id=base_game_id,
+        consola=consola_id,
+        licencia=licencia_id,
+        duracion_dias_alquiler=duracion_dias_alquiler,
     )
 
 
@@ -103,8 +129,12 @@ async def list_shopping_car(
     rows = result.all()
 
     return [
-        _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
-        for item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id in rows
+        _build_shopping_car_read(
+            item, precio, precio_descuento, title, image, desc_console, desc_licence,
+            base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        )
+        for item, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler in rows
     ]
 
 
@@ -121,11 +151,17 @@ async def get_shopping_car_item(
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-    item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id = row
+    (
+        item, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+    ) = row
     if item.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
 
-    return _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
+    return _build_shopping_car_read(
+        item, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+    )
 
 
 @router.post("/", response_model=ShoppingCarRead, status_code=status.HTTP_201_CREATED)
@@ -159,9 +195,15 @@ async def create_shopping_car_item(
     result = await session.execute(
         _shopping_car_display_query().where(ShoppingCar.id_shopping_car == item.id_shopping_car)
     )
-    _, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id = result.first()
+    (
+        _, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+    ) = result.first()
 
-    return _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
+    return _build_shopping_car_read(
+        item, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+    )
 
 
 @router.put("/{product_id}", response_model=ShoppingCarRead)
@@ -188,9 +230,15 @@ async def update_shopping_car_item(
     result = await session.execute(
         _shopping_car_display_query().where(ShoppingCar.id_shopping_car == item.id_shopping_car)
     )
-    _, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id = result.first()
+    (
+        _, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+    ) = result.first()
 
-    return _build_shopping_car_read(item, precio, precio_descuento, title, image, desc_console, desc_licence, base_game_id)
+    return _build_shopping_car_read(
+        item, precio, precio_descuento, title, image, desc_console, desc_licence,
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+    )
 
 
 @router.delete("/{shopping_car_id}", status_code=status.HTTP_204_NO_CONTENT)
