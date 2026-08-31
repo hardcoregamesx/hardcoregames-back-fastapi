@@ -33,6 +33,7 @@ ALLOWED_ORIGINS = [
     "https://www.hardcoregames.co",
     "https://hardcoregames.co",
     "https://srv936408.hstgr.cloud",
+    "https://frontendv2.srv936408.hstgr.cloud",
     "http://localhost:5173",
     "http://localhost:3000",
 ]
