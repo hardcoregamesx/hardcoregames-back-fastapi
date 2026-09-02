@@ -153,13 +153,19 @@ async def _product_matches_coupon_restrictions(
 
     Returns True if:
     - Coupon has no game detail restrictions (empty set → applies to all), OR
-    - The game detail's (licencia_id, consola_id, duracion_dias_alquiler) tuple
-      matches one of the allowed combinations for this coupon.
+    - game_detail_id is exactly one of the coupon's linked GameDetail rows.
 
     Returns False if:
     - Coupon has restrictions but the game detail is not in the allowed set.
+
+    NOTE: this used to match by the (licencia_id, consola_id,
+    duracion_dias_alquiler) tuple instead of the exact game detail id, which
+    made a coupon "restricted" to one product actually apply to every other
+    product sharing the same license/console/rental-duration combo (e.g.
+    every 360-day Primaria PS5 subscription, not just the one intended).
+    Matching the exact id mirrors Django's Coupon.validate_coupon, which was
+    already correct.
     """
-    # Fetch all game detail IDs linked to this coupon via M2M
     res_gd = await session.execute(
         select(CouponGameDetail.gamedetail_id)
         .where(CouponGameDetail.coupon_id == coupon_id)
@@ -170,36 +176,7 @@ async def _product_matches_coupon_restrictions(
     if not coupon_game_detail_ids:
         return True
 
-    # Build set of allowed (licencia_id, consola_id, duracion_dias_alquiler) combinations
-    res_allowed = await session.execute(
-        select(
-            GameDetail.licencia_id,
-            GameDetail.consola_id,
-            GameDetail.duracion_dias_alquiler,
-        ).where(GameDetail.id_game_detail.in_(coupon_game_detail_ids))
-    )
-    allowed_combinations = {
-        (row.licencia_id, row.consola_id, row.duracion_dias_alquiler)
-        for row in res_allowed.all()
-    }
-
-    # Fetch the combination for the given game detail
-    res_item = await session.execute(
-        select(
-            GameDetail.licencia_id,
-            GameDetail.consola_id,
-            GameDetail.duracion_dias_alquiler,
-        ).where(GameDetail.id_game_detail == game_detail_id)
-    )
-    item_row = res_item.first()
-
-    # If game detail not found, no match
-    if item_row is None:
-        return False
-
-    # Check if item's combination is in allowed set
-    item_combination = (item_row.licencia_id, item_row.consola_id, item_row.duracion_dias_alquiler)
-    return item_combination in allowed_combinations
+    return game_detail_id in coupon_game_detail_ids
 
 
 async def _validate_product_coupon_match(
@@ -458,6 +435,31 @@ async def _evaluate_coupon_business_rules(
                     if user_used < int(limit):
                         continue
                 return False, "Has alcanzado el límite de usos de este cupón."
+
+        # --- requires_product -------------------------------------------
+        # Cart must also contain at least one combination of a given
+        # id_product (any platform/license/duration variant counts), e.g.
+        # "50% off Product A only if Product B is also in the cart".
+        elif rt == "requires_product":
+            v = value if isinstance(value, dict) else {}
+            required_product_ids = set(v.get("product_ids", []))
+
+            if required_product_ids:
+                cart_combination_ids = [
+                    item.product_id for item in cart_items if item.product_id is not None
+                ]
+                cart_product_ids: set[int] = set()
+                if cart_combination_ids:
+                    res_req = await session.execute(
+                        select(GameDetail.producto_id)
+                        .where(GameDetail.id_game_detail.in_(cart_combination_ids))
+                    )
+                    cart_product_ids = {row[0] for row in res_req.all()}
+
+                if op == "in":
+                    if cart_product_ids & required_product_ids:
+                        continue
+                    return False, "Este cupón requiere que compres otro producto específico junto con este."
 
         # Unknown / unhandled rule type — pass silently (matches Django fallback)
 
