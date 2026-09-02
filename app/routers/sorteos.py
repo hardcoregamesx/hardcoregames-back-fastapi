@@ -81,10 +81,24 @@ async def list_active_sorteos(
     session: AsyncSession = Depends(get_session),
     current_user: User | None = Depends(get_current_user_optional),
 ):
+    """Alimenta la seccion "Sorteos activos" de /rewards/. Incluye tanto los
+    ACTIVE (para participar) como los FINISHED (para ver el ganador) -- sin
+    esto, un sorteo desaparecia de la vista apenas se cerraba y nadie, ni
+    siquiera el propio ganador, tenia forma de verlo en el sitio. SorteoHero
+    ya sabia renderizar el bloque de ganadores para FINISHED; solo faltaba
+    que esta lista se los pasara.
+    """
     result = await session.execute(
-        select(Sorteo).where(Sorteo.status == "ACTIVE").order_by(Sorteo.end_date.asc())
+        select(Sorteo).where(Sorteo.status.in_(("ACTIVE", "FINISHED")))
     )
     sorteos = result.scalars().all()
+    # Activos primero (el mas proximo a cerrar arriba), luego finalizados
+    # (el mas reciente arriba) -- direcciones opuestas, por eso se ordena en
+    # Python en vez de en el ORDER BY.
+    sorteos = sorted(
+        sorteos,
+        key=lambda s: (0, s.end_date.timestamp()) if s.status == "ACTIVE" else (1, -s.end_date.timestamp()),
+    )
     return {"data": [await _serialize_sorteo(session, s, current_user) for s in sorteos]}
 
 
