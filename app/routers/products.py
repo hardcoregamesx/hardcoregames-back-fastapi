@@ -1492,6 +1492,25 @@ async def validate_coupon_for_product(
         session=session,
     )
 
+    # A coupon can cap how many matching cart items actually receive the
+    # discount (e.g. "buy game A, get ONE of these other games free" — not
+    # every matching game in the cart). Without this, a coupon restricted to
+    # several products would discount every single one of them if the
+    # customer added them all, which is not "buy 1 get 1" but "buy 1 get
+    # unlimited". When capped, the cheapest matching items are discounted
+    # first so the customer keeps the best deal while margin is protected.
+    res_cap = await session.execute(
+        select(CouponRule.value).where(
+            CouponRule.coupon_id == coupon.id_coupon,
+            CouponRule.rule_type == "max_discounted_items",
+        )
+    )
+    max_discounted_items = None
+    for (rule_value,) in res_cap.all():
+        limit = (rule_value or {}).get("limit") if isinstance(rule_value, dict) else None
+        if limit is not None:
+            max_discounted_items = int(limit) if max_discounted_items is None else min(max_discounted_items, int(limit))
+
     # Compute cart totals and, if applicable, discounted prices.
     total_before = sum(
         item.quantity * item.unit_price for item in payload.cart_items
@@ -1521,6 +1540,13 @@ async def validate_coupon_for_product(
                 eligible_total += item.unit_price * item.quantity
             else:
                 non_eligible_total += item.unit_price * item.quantity
+
+        if max_discounted_items is not None and len(eligible_items) > max_discounted_items:
+            eligible_items.sort(key=lambda i: i.unit_price)
+            overflow_items = eligible_items[max_discounted_items:]
+            eligible_items = eligible_items[:max_discounted_items]
+            non_eligible_total += sum(i.unit_price * i.quantity for i in overflow_items)
+            eligible_total = sum(i.unit_price * i.quantity for i in eligible_items)
 
         res_gd_check = await session.execute(
             select(CouponGameDetail.gamedetail_id)
@@ -1562,12 +1588,11 @@ async def validate_coupon_for_product(
 
     elif is_valid and coupon.percentage_off and coupon.percentage_off > 0:
         discount_factor = (100 - coupon.percentage_off) / 100.0
-        discounted_total = 0.0
 
         # Resolve which items are covered by this coupon's game_details M2M.
-        # Use helper method to check if each product matches coupon restrictions.
+        applying_items: list[CartItem] = []
+        discounted_total = 0.0
         for item in payload.cart_items:
-            # Check if product matches coupon restrictions using helper method
             applies = await _product_matches_coupon_restrictions(
                 session=session,
                 coupon_id=coupon.id_coupon,
@@ -1575,22 +1600,29 @@ async def validate_coupon_for_product(
             ) if item.product_id is not None else False
 
             if applies:
-                discounted_unit_price = item.unit_price * discount_factor
-                discounted_line_total = discounted_unit_price * item.quantity
-                discounted_total += discounted_line_total
-
-                discounted_items.append(
-                    DiscountedItem(
-                        product_id=item.product_id,
-                        original_unit_price=item.unit_price,
-                        discounted_unit_price=discounted_unit_price,
-                        quantity=item.quantity,
-                    )
-                )
+                applying_items.append(item)
             else:
                 discounted_total += item.unit_price * item.quantity
 
-        total_after = discounted_total  # moved outside the loop
+        if max_discounted_items is not None and len(applying_items) > max_discounted_items:
+            applying_items.sort(key=lambda i: i.unit_price)
+            overflow_items = applying_items[max_discounted_items:]
+            applying_items = applying_items[:max_discounted_items]
+            discounted_total += sum(i.unit_price * i.quantity for i in overflow_items)
+
+        for item in applying_items:
+            discounted_unit_price = item.unit_price * discount_factor
+            discounted_total += discounted_unit_price * item.quantity
+            discounted_items.append(
+                DiscountedItem(
+                    product_id=item.product_id,
+                    original_unit_price=item.unit_price,
+                    discounted_unit_price=discounted_unit_price,
+                    quantity=item.quantity,
+                )
+            )
+
+        total_after = discounted_total
 
         # Check if coupon has restrictions; if so and no items matched, mark as invalid
         res_gd_check = await session.execute(
