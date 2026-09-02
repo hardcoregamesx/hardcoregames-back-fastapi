@@ -102,6 +102,29 @@ async def list_active_sorteos(
     return {"data": [await _serialize_sorteo(session, s, current_user) for s in sorteos]}
 
 
+async def _last_finished_sorteo(session: AsyncSession) -> dict | None:
+    """El sorteo FINISHED mas reciente (por end_date), con su(s) ganador(es)
+    -- no todo el historial, solo el ultimo. Se usa en la seccion "Mis
+    sorteos" de /rewards/ para que siempre haya alguna novedad que mostrar
+    ahi mismo, sin obligar al usuario a saber el id del sorteo ni a entrar
+    a la lista completa."""
+    result = await session.execute(
+        select(Sorteo)
+        .where(Sorteo.status == "FINISHED")
+        .order_by(Sorteo.end_date.desc())
+        .limit(1)
+    )
+    sorteo = result.scalars().first()
+    if sorteo is None:
+        return None
+    return {
+        "sorteo_id": sorteo.id,
+        "title": sorteo.title,
+        "prize_image_url": sorteo.prize_image_url,
+        "winners": await _serialize_winners(session, sorteo.id),
+    }
+
+
 @router.get("/{sorteo_id}")
 async def get_sorteo(
     sorteo_id: int,
@@ -119,8 +142,10 @@ async def get_my_widget_summary(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Resumen liviano para el boton flotante: solo lo que necesita para
-    pintar el progreso (o el badge con la cantidad de sorteos activos)."""
+    """Resumen liviano para la seccion "Mis sorteos" de /rewards/ (y el boton
+    flotante): progreso en los sorteos activos, mas el ganador del ultimo
+    sorteo finalizado (last_winner) para que siempre haya algo que mostrar
+    ahi, sin importar si el usuario esta participando en uno activo."""
     result = await session.execute(
         select(Sorteo).where(Sorteo.status == "ACTIVE").order_by(Sorteo.end_date.asc())
     )
@@ -141,4 +166,4 @@ async def get_my_widget_summary(
             }
         )
 
-    return {"data": items}
+    return {"data": items, "last_winner": await _last_finished_sorteo(session)}
