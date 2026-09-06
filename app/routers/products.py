@@ -22,7 +22,7 @@ from ..models import (
     CouponRedemption,
     ProductAlias,
 )
-from ..util.util_auth import get_current_user, get_current_user_optional
+from ..util.util_auth import get_current_user, get_current_user_optional, require_agent_api_key
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -1177,6 +1177,226 @@ async def search_products(q: str, offset: int = 0, limit: int = 20, use_trgm: bo
         for p in products
     ]
     return {"data": data}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints para agentes automatizados de venta (bot de chats, n8n)
+#
+# Se diferencian de /products/search en tres cosas que importan al cotizar:
+#   1. Devuelven el precio de CADA variante, no el minimo del producto.
+#   2. Devuelven stock, que /search no expone.
+#   3. Devuelven el nombre de la consola y la licencia, no solo su id.
+# ---------------------------------------------------------------------------
+
+# Token que escribe el cliente -> plataforma canonica.
+_PLATFORM_TOKENS = {
+    "ps5": "playstation5", "playstation5": "playstation5", "play5": "playstation5",
+    "ps4": "playstation4", "playstation4": "playstation4", "play4": "playstation4",
+    "ps3": "playstation3", "playstation3": "playstation3",
+    "xbox": "xbox", "equis": "xbox",
+    "xboxone": "xboxone", "one": "xboxone",
+    "series": "series", "seriesx": "series", "seriess": "series",
+    "xboxseriesx": "series", "xboxseriess": "series", "xboxseries": "series",
+    "switch": "switch", "nintendo": "switch", "nintendoswitch": "switch",
+    "switch2": "switch2", "nintendoswitch2": "switch2",
+    "pc": "pc", "steam": "pc", "windows": "pc",
+}
+
+# Plataforma canonica -> formas que puede tener la descripcion en la BD.
+_PLATFORM_ALIASES = {
+    "playstation5": ("ps5", "playstation5"),
+    "playstation4": ("ps4", "playstation4"),
+    "playstation3": ("ps3", "playstation3"),
+    "xbox": ("xbox",),
+    "xboxone": ("xboxone", "xbox1"),
+    "series": ("series", "seriesx", "seriess"),
+    "switch": ("switch", "nintendoswitch"),
+    "switch2": ("switch2", "nintendoswitch2"),
+    "pc": ("pc", "steam", "windows"),
+}
+
+# Frases de plataforma que hay que unir ANTES de partir por espacios, o la
+# cola suelta ("series x" -> "x") se cuela en el termino de busqueda.
+_PLATFORM_PHRASES = [
+    ("play station", "playstation"),
+    ("x box", "xbox"),
+    ("nintendo switch 2", "switch2"),
+    ("nintendo switch", "switch"),
+    ("switch 2", "switch2"),
+    ("xbox series x", "seriesx"),
+    ("xbox series s", "seriess"),
+    ("xbox series", "series"),
+    ("series x", "seriesx"),
+    ("series s", "seriess"),
+    ("xbox one", "xboxone"),
+    ("playstation 5", "ps5"),
+    ("playstation 4", "ps4"),
+    ("playstation 3", "ps3"),
+]
+
+# Palabras que un cliente escribe pero que nunca estan en un titulo.
+_NOISE_TOKENS = {
+    "para", "de", "del", "el", "la", "los", "las", "en", "y", "o", "un", "una",
+    "juego", "juegos", "precio", "precios", "cuanto", "vale", "cuesta", "valor",
+    "tienen", "tienes", "tiene", "hay", "disponible", "disponibles",
+    "hola", "buenas", "porfa", "porfavor", "gracias", "info", "informacion",
+}
+
+
+def _split_agent_query(q: str) -> tuple[str, list[str]]:
+    """Separa el termino de busqueda real de las plataformas y del ruido.
+
+    /products/search falla con "FC 27 para PS5" porque exige que todo el texto
+    normalizado aparezca en el titulo, y devuelve cero filas de un producto que
+    si existe. Aqui la plataforma se extrae y sirve para elegir la fila
+    correcta del resultado, nunca para buscar.
+
+    Devuelve ("", []) cuando el cliente no nombro ningun producto ("precio para
+    ps5"): es preferible pedirle el nombre a inventarse una busqueda.
+    """
+    from unidecode import unidecode
+
+    texto = " ".join(unidecode(q).lower().split())
+    for frase, canonico in _PLATFORM_PHRASES:
+        texto = texto.replace(frase, canonico)
+
+    platforms: list[str] = []
+    terms: list[str] = []
+    for word in texto.split():
+        norm = _normalize_search_text(word)
+        if not norm:
+            continue
+        if norm in _PLATFORM_TOKENS:
+            # Se acumulan todas: "FC 27 para PS5 o Xbox" debe ver ambas filas.
+            canonico = _PLATFORM_TOKENS[norm]
+            if canonico not in platforms:
+                platforms.append(canonico)
+            continue
+        if norm in _NOISE_TOKENS:
+            continue
+        terms.append(norm)
+
+    return "".join(terms), platforms
+
+
+def _console_matches(console_desc: str | None, platforms: list[str]) -> bool:
+    if not console_desc or not platforms:
+        return False
+    norm = _normalize_search_text(console_desc)
+    return any(
+        alias in norm
+        for plataforma in platforms
+        for alias in _PLATFORM_ALIASES.get(plataforma, (plataforma,))
+    )
+
+
+def _agent_variant_stmt():
+    """Filas planas variante a variante: producto + consola + licencia + precio + stock."""
+    return (
+        select(
+            Product.title,
+            Consoles.descripcion.label("consola"),
+            Licenses.descripcion.label("licencia"),
+            GameDetail.precio,
+            GameDetail.precio_descuento,
+            GameDetail.stock,
+            GameDetail.duracion_dias_alquiler,
+        )
+        .select_from(GameDetail)
+        .join(Product, Product.id_product == GameDetail.producto_id)
+        .outerjoin(Consoles, Consoles.id_console == GameDetail.consola_id)
+        .outerjoin(Licenses, Licenses.id_license == GameDetail.licencia_id)
+    )
+
+
+def _agent_row(row) -> dict:
+    item = {
+        "producto": row.title,
+        "consola": row.consola,
+        "licencia": row.licencia,
+        "precio": row.precio,
+        "stock": row.stock,
+    }
+    if row.precio_descuento and row.precio_descuento != row.precio:
+        item["precio_descuento"] = row.precio_descuento
+    if row.duracion_dias_alquiler:
+        item["dias_alquiler"] = row.duracion_dias_alquiler
+    return item
+
+
+@router.get("/agent-search", dependencies=[Depends(require_agent_api_key)])
+async def agent_search_products(
+    q: str,
+    only_stock: bool = True,
+    limit: int = 25,
+    session: AsyncSession = Depends(get_session),
+):
+    """Busqueda de precios pensada para un agente que cotiza por chat."""
+    search_norm, platforms = _split_agent_query(q)
+    if not search_norm:
+        return {"q": q, "termino": "", "plataformas": platforms, "resultados": [],
+                "agotados_ocultos": 0,
+                "nota": "La consulta no nombra ningun producto; pide el titulo al cliente."}
+
+    title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
+    alias_expr = func.replace(func.unaccent(func.lower(ProductAlias.alias)), ' ', '')
+
+    if search_norm in ALIAS_MAP:
+        patterns = [f"%{_normalize_search_text(a)}%" for a in ALIAS_MAP[search_norm]]
+        title_cond = or_(*[title_expr.ilike(p) for p in patterns])
+    else:
+        title_cond = title_expr.ilike(f"%{search_norm}%")
+
+    alias_subq = select(ProductAlias.producto_id).where(alias_expr == search_norm)
+
+    stmt = (
+        _agent_variant_stmt()
+        .where(or_(title_cond, Product.id_product.in_(alias_subq)))
+        .order_by(GameDetail.stock.desc(), GameDetail.precio.asc())
+        .limit(200)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    # La plataforma acota el resultado, pero si no casa con ninguna fila se
+    # devuelven todas: es preferible ofrecer otra consola a decir "no existe".
+    if platforms:
+        casan = [r for r in rows if _console_matches(r.consola, platforms)]
+        if casan:
+            rows = casan
+
+    agotados = sum(1 for r in rows if (r.stock or 0) <= 0)
+    if only_stock:
+        rows = [r for r in rows if (r.stock or 0) > 0]
+
+    return {
+        "q": q,
+        "termino": search_norm,
+        "plataformas": platforms,
+        "resultados": [_agent_row(r) for r in rows[:limit]],
+        "agotados_ocultos": agotados if only_stock else 0,
+    }
+
+
+@router.get("/agent-catalog", dependencies=[Depends(require_agent_api_key)])
+async def agent_catalog(
+    only_stock: bool = True,
+    session: AsyncSession = Depends(get_session),
+):
+    """Volcado plano del catalogo para cachearlo en un archivo local.
+
+    Se consulta con grep desde el agente, de forma que los precios durante una
+    conversacion no cuesten ni una llamada de red.
+    """
+    stmt = _agent_variant_stmt().order_by(Product.title)
+    if only_stock:
+        stmt = stmt.where(GameDetail.stock > 0)
+
+    rows = (await session.execute(stmt)).all()
+    return {
+        "generado": datetime.now(timezone.utc).isoformat(),
+        "total": len(rows),
+        "items": [_agent_row(r) for r in rows],
+    }
 
 
 @router.get("/most-sold")

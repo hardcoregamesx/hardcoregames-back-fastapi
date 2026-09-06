@@ -3,10 +3,11 @@ from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from itsdangerous import URLSafeTimedSerializer
 import os
+import secrets
 
 from app.database import get_session
 from app.models import User, UserCustomized
@@ -225,3 +226,29 @@ def verify_reset_token(token: str, max_age: int = RESET_TOKEN_EXPIRE_SECONDS) ->
         # - BadSignature: Token manipulado o clave incorrecta
         # - BadData: Datos corruptos
         return None
+
+# ---------------------------------------------------------------------------
+# API key para agentes automatizados (bot de chats, n8n, etc.)
+# ---------------------------------------------------------------------------
+
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+
+agent_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def require_agent_api_key(api_key: Optional[str] = Depends(agent_api_key_header)) -> None:
+    """Protege los endpoints pensados para agentes automatizados.
+
+    Falla cerrado: si AGENT_API_KEY no esta configurada en el entorno, el
+    endpoint responde 503 en vez de quedar abierto.
+    """
+    if not AGENT_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AGENT_API_KEY no configurada en el servidor",
+        )
+    if not api_key or not secrets.compare_digest(api_key, AGENT_API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key invalida o ausente",
+        )
