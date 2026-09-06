@@ -65,3 +65,6 @@ node_modules/
 *.whl
 
 # Misc
+# Claude Code: ajustes locales de cada maquina. Aqui viven las credenciales
+# del contestador (AGENT_API_KEY), asi que este archivo NO se sube nunca.
+.claude/settings.local.json
