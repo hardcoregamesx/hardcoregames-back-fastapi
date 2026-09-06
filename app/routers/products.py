@@ -1203,18 +1203,29 @@ _PLATFORM_TOKENS = {
     "pc": "pc", "steam": "pc", "windows": "pc",
 }
 
-# Plataforma canonica -> formas que puede tener la descripcion en la BD.
+# Plataforma canonica -> descripciones de products_consoles que la satisfacen,
+# comparadas exactas (ya normalizadas). Se compara exacto y no por substring
+# porque "xboxseries" contiene "xbox": con substring, quien pide una Xbox One
+# veria filas de Series.
+#
+# El id 5 de products_consoles es un "xbox" generico, sin generacion. Se acepta
+# para cualquier consulta de la familia Xbox: ocultarle a quien pide una Series
+# un stock que quiza le sirve es peor que ensenarselo, porque la fila lleva el
+# nombre de la consola y el cliente puede juzgar.
 _PLATFORM_ALIASES = {
     "playstation5": ("ps5", "playstation5"),
     "playstation4": ("ps4", "playstation4"),
     "playstation3": ("ps3", "playstation3"),
-    "xbox": ("xbox",),
-    "xboxone": ("xboxone", "xbox1"),
-    "series": ("series", "seriesx", "seriess"),
+    "xbox": ("xbox", "xboxone", "xbox1", "xboxseries", "xboxseriesx", "xboxseriess"),
+    "xboxone": ("xboxone", "xbox1", "xbox"),
+    "series": ("xboxseries", "xboxseriesx", "xboxseriess", "series", "seriesx", "seriess", "xbox"),
     "switch": ("switch", "nintendoswitch"),
     "switch2": ("switch2", "nintendoswitch2"),
     "pc": ("pc", "steam", "windows"),
 }
+
+# Una ficha marcada asi sirve para cualquier plataforma que pida el cliente.
+_CONSOLA_COMODIN = "multiplataforma"
 
 # Frases de plataforma que hay que unir ANTES de partir por espacios, o la
 # cola suelta ("series x" -> "x") se cuela en el termino de busqueda.
@@ -1284,10 +1295,11 @@ def _console_matches(console_desc: str | None, platforms: list[str]) -> bool:
     if not console_desc or not platforms:
         return False
     norm = _normalize_search_text(console_desc)
+    if norm == _CONSOLA_COMODIN:
+        return True
     return any(
-        alias in norm
+        norm in _PLATFORM_ALIASES.get(plataforma, (plataforma,))
         for plataforma in platforms
-        for alias in _PLATFORM_ALIASES.get(plataforma, (plataforma,))
     )
 
 

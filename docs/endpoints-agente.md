@@ -97,6 +97,15 @@ Notas de comportamiento:
   que tiene `/products/search`, donde esa misma consulta devuelve cero filas.
 - Si la plataforma no casa con ninguna fila, se devuelven **todas** en vez de un
   "no disponible" falso: es mejor ofrecer otra consola que negar el producto.
+- La consola se compara **exacta** contra `products_consoles`, no por substring:
+  `"xboxseries"` contiene `"xbox"`, y con substring quien pedia una Xbox One
+  veia filas de Series.
+- `products_consoles` tiene un `"xbox"` generico sin generacion (id 5). Vale
+  para cualquier consulta de la familia Xbox: ocultar ese stock a quien pide
+  una Series es peor que mostrarlo, porque la fila lleva el nombre y el cliente
+  puede juzgar.
+- Una ficha en `"Multiplataforma"` casa con cualquier plataforma que pida el
+  cliente. Sin esa regla no casaria con ninguna.
 - `agotados_ocultos` permite distinguir **"agotado"** de **"no lo tenemos"**, que
   comercialmente no es lo mismo.
 - Si la consulta no nombra ningun producto (`"precio ps5"`), devuelve

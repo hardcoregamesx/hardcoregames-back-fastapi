@@ -117,6 +117,53 @@ def test_console_matches():
     assert not _console_matches("PS5", [])
 
 
+# Las descripciones reales de products_consoles en produccion.
+CONSOLAS_REALES = [
+    "PlayStation 4", "PlayStation 5", "Xbox Series", "Xbox one",
+    "xbox", "Pc", "Nintendo Switch", "Multiplataforma",
+]
+
+
+def test_las_consolas_reales_casan_con_su_plataforma():
+    assert _console_matches("PlayStation 4", ["playstation4"])
+    assert _console_matches("Xbox Series", ["series"])
+    assert _console_matches("Xbox one", ["xboxone"])
+    assert _console_matches("Pc", ["pc"])
+    assert _console_matches("Nintendo Switch", ["switch"])
+
+
+def test_series_y_one_no_se_confunden_entre_si():
+    """Con comparacion por substring, "xboxseries" contiene "xbox" y quien
+    pedia una One veia filas de Series. Por eso se compara exacto."""
+    assert not _console_matches("Xbox Series", ["xboxone"])
+    assert not _console_matches("Xbox one", ["series"])
+
+
+def test_el_xbox_generico_vale_para_toda_la_familia():
+    """El id 5 no dice generacion. Ocultar ese stock a quien pide una Series
+    es peor que mostrarlo: la fila lleva el nombre y el cliente juzga."""
+    assert _console_matches("xbox", ["xbox"])
+    assert _console_matches("xbox", ["series"])
+    assert _console_matches("xbox", ["xboxone"])
+    assert not _console_matches("xbox", ["playstation5"])
+
+
+def test_multiplataforma_vale_para_cualquier_consulta():
+    for plataforma in ["playstation5", "playstation4", "xbox", "series", "switch", "pc"]:
+        assert _console_matches("Multiplataforma", [plataforma]), plataforma
+
+
+def test_ninguna_consola_real_casa_con_una_plataforma_ajena():
+    ajenas = {
+        "PlayStation 4": "playstation5",
+        "PlayStation 5": "playstation4",
+        "Nintendo Switch": "pc",
+        "Pc": "switch",
+    }
+    for consola, plataforma in ajenas.items():
+        assert not _console_matches(consola, [plataforma]), consola
+
+
 if __name__ == "__main__":
     fallos = 0
     for nombre, fn in sorted(globals().items()):
