@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from itsdangerous import URLSafeTimedSerializer
@@ -236,18 +236,31 @@ AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 agent_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-async def require_agent_api_key(api_key: Optional[str] = Depends(agent_api_key_header)) -> None:
+async def require_agent_api_key(
+    api_key: Optional[str] = Depends(agent_api_key_header),
+    key: Optional[str] = Query(
+        None,
+        description=(
+            "Alternativa a la cabecera X-API-Key para clientes que solo pueden "
+            "navegar a una URL (p.ej. un agente operando el navegador). Queda "
+            "registrada en el historial del navegador y en los logs de acceso: "
+            "usa la cabecera siempre que puedas."
+        ),
+    ),
+) -> None:
     """Protege los endpoints pensados para agentes automatizados.
 
-    Falla cerrado: si AGENT_API_KEY no esta configurada en el entorno, el
-    endpoint responde 503 en vez de quedar abierto.
+    Acepta la clave por cabecera o por query param. Falla cerrado: si
+    AGENT_API_KEY no esta configurada en el entorno, el endpoint responde 503
+    en vez de quedar abierto.
     """
     if not AGENT_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AGENT_API_KEY no configurada en el servidor",
         )
-    if not api_key or not secrets.compare_digest(api_key, AGENT_API_KEY):
+    entregada = api_key or key
+    if not entregada or not secrets.compare_digest(entregada, AGENT_API_KEY):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API key invalida o ausente",

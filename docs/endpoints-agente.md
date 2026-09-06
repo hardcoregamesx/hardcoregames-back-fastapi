@@ -26,6 +26,28 @@ AGENT_API_KEY=<cadena larga y aleatoria>
 
 Sin esta variable los endpoints responden **503** (fallan cerrados, no abiertos).
 
+Generala en el servidor, nunca en un chat ni en un commit:
+
+```bash
+openssl rand -hex 32
+```
+
+### Dos formas de mandarla
+
+```bash
+# Preferida: por cabecera
+curl -H "X-API-Key: $AGENT_API_KEY" "$HG_API/products/agent-search?q=FC%2027"
+
+# Alternativa: por query param
+curl "$HG_API/products/agent-search?q=FC%2027&key=$AGENT_API_KEY"
+```
+
+El query param existe para agentes que solo pueden **navegar a una URL** y no
+pueden fijar cabeceras (por ejemplo un agente operando el navegador). Tiene un
+coste: la clave queda en el historial del navegador y en los logs de acceso del
+servidor. Solo expone precios y stock, no datos de clientes ni de pago, pero
+conviene rotarla cada cierto tiempo. Usa la cabecera siempre que puedas.
+
 ## `GET /products/agent-search`
 
 ```bash
