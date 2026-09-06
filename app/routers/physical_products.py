@@ -154,8 +154,13 @@ async def _fetch_products() -> list[dict]:
     return _parse_csv(resp.content.decode("utf-8"))
 
 
-@router.get("")
-async def list_physical_products():
+async def get_catalog() -> dict:
+    """Catálogo físico cacheado. Compartido con /products/agent-search.
+
+    Si Google falla y hay cache previa, se sirve la cache aunque esté vieja:
+    un precio de hace diez minutos es mejor que dejar al agente sin dato,
+    que es cuando se inventa uno.
+    """
     now = time.time()
     stale = _cache["data"] is None or (now - _cache["fetched_at"]) > _CACHE_TTL_SECONDS
     if stale:
@@ -171,3 +176,8 @@ async def list_physical_products():
         }
         _cache["fetched_at"] = now
     return _cache["data"]
+
+
+@router.get("")
+async def list_physical_products():
+    return await get_catalog()

@@ -24,6 +24,7 @@ from ..models import (
 )
 from ..util.util_auth import get_current_user, get_current_user_optional, require_agent_api_key
 from .shopping_car import _effective_price
+from .physical_products import get_catalog as _get_physical_catalog
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -1368,6 +1369,53 @@ def _agregar_variantes(rows) -> list[dict]:
     return sorted(grupos.values(), key=lambda i: (-i["stock"], i["precio_final"]))
 
 
+async def _buscar_fisicos(search_norm: str, platforms: list[str]) -> list[dict]:
+    """Busca consolas, controles y juegos fisicos en el catalogo del Sheet.
+
+    Viven fuera de Postgres, asi que agent-search no los veia y el agente se
+    quedaba sin poder cotizar una consola. Se buscan por el termino y tambien
+    por la plataforma: "PS5" se parsea como plataforma y deja el termino
+    vacio, que es justo como pregunta quien quiere una consola.
+    """
+    agujas = [search_norm] if search_norm else []
+    for plataforma in platforms:
+        agujas.extend(_PLATFORM_ALIASES.get(plataforma, (plataforma,)))
+    agujas = [a for a in agujas if a]
+    if not agujas:
+        return []
+
+    try:
+        catalogo = await _get_physical_catalog()
+    except HTTPException:
+        # El Sheet no responde. Se devuelve vacio en vez de romper la
+        # consulta entera: los digitales siguen sirviendo.
+        return []
+
+    encontrados = []
+    for item in catalogo.get("products", []):
+        nombre_norm = _normalize_search_text(item.get("name") or "")
+        if not any(aguja in nombre_norm for aguja in agujas):
+            continue
+        fila = {
+            "producto": item.get("name"),
+            "categoria": item.get("category"),
+            "precio_efectivo": item.get("price_cash"),
+            "precio_transferencia": item.get("price_transfer"),
+            "precio_financiado": item.get("price_sistecredito"),
+            "disponible": item.get("available"),
+        }
+        for origen, destino in (("condition", "estado"), ("location", "ubicacion")):
+            if item.get(origen):
+                fila[destino] = item[origen]
+        encontrados.append(fila)
+
+    # Disponibles primero, luego por precio.
+    return sorted(
+        encontrados,
+        key=lambda f: (not f["disponible"], f["precio_efectivo"] or 0),
+    )
+
+
 @router.get("/agent-search", dependencies=[Depends(require_agent_api_key)])
 async def agent_search_products(
     q: str,
@@ -1377,10 +1425,21 @@ async def agent_search_products(
 ):
     """Busqueda de precios pensada para un agente que cotiza por chat."""
     search_norm, platforms = _split_agent_query(q)
-    if not search_norm:
-        return {"q": q, "termino": "", "plataformas": platforms, "resultados": [],
+    if not search_norm and not platforms:
+        return {"q": q, "termino": "", "plataformas": [], "resultados": [], "fisicos": [],
                 "agotados_ocultos": 0,
                 "nota": "La consulta no nombra ningun producto; pide el titulo al cliente."}
+
+    fisicos = await _buscar_fisicos(search_norm, platforms)
+
+    if not search_norm:
+        # Solo plataforma ("PS5"): no hay juego que buscar en digital, pero
+        # si puede haber consola en el catalogo fisico.
+        return {"q": q, "termino": "", "plataformas": platforms, "resultados": [],
+                "fisicos": fisicos, "agotados_ocultos": 0,
+                "nota": ("Sin nombre de producto no hay resultados digitales. "
+                         "Si el cliente quiere la consola fisica, mira `fisicos`; "
+                         "si quiere un juego, pidele el titulo.")}
 
     title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
     alias_expr = func.replace(func.unaccent(func.lower(ProductAlias.alias)), ' ', '')
@@ -1417,6 +1476,7 @@ async def agent_search_products(
         "termino": search_norm,
         "plataformas": platforms,
         "resultados": items[:limit],
+        "fisicos": fisicos,
         "agotados_ocultos": agotados if only_stock else 0,
     }
 

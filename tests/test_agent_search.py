@@ -4,6 +4,7 @@ El repo no tiene pytest instalado, asi que este archivo corre solo:
     python3 tests/test_agent_search.py
 Tambien funciona bajo pytest si algun dia se anade.
 """
+import asyncio
 import os
 import sys
 from types import SimpleNamespace
@@ -12,8 +13,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
 os.environ.setdefault("AGENT_API_KEY", "test")
 
+import app.routers.products as productos  # noqa: E402
 from app.routers.products import (  # noqa: E402
     _agregar_variantes,
+    _buscar_fisicos,
     _console_matches,
     _split_agent_query,
     router,
@@ -162,6 +165,61 @@ def test_ninguna_consola_real_casa_con_una_plataforma_ajena():
     }
     for consola, plataforma in ajenas.items():
         assert not _console_matches(consola, [plataforma]), consola
+
+
+CATALOGO_FISICO = {"products": [
+    {"name": "PS5 Slim con lector", "category": "CONSOLA", "price_cash": 2400000,
+     "price_transfer": 2450000, "price_sistecredito": 2880000, "available": True,
+     "condition": "Nuevo", "location": "Medellin"},
+    {"name": "PlayStation 5 Digital", "category": "CONSOLA", "price_cash": 2100000,
+     "price_transfer": 2150000, "price_sistecredito": 2520000, "available": False,
+     "condition": "Usado", "location": "Medellin"},
+    {"name": "Control Xbox Series", "category": "ACCESORIO", "price_cash": 280000,
+     "price_transfer": 280000, "price_sistecredito": 336000, "available": True,
+     "condition": "Nuevo", "location": None},
+]}
+
+
+def _buscar(q):
+    """Corre la busqueda fisica con un catalogo de prueba, sin llamar a Google."""
+    original = productos._get_physical_catalog
+
+    async def falso():
+        return CATALOGO_FISICO
+
+    productos._get_physical_catalog = falso
+    try:
+        termino, plataformas = productos._split_agent_query(q)
+        return asyncio.run(_buscar_fisicos(termino, plataformas))
+    finally:
+        productos._get_physical_catalog = original
+
+
+def test_una_consola_se_encuentra_solo_con_la_plataforma():
+    """Caso real: "PS5" deja el termino vacio porque es una plataforma, y antes
+    devolvia "la consulta no nombra ningun producto" con consolas en catalogo."""
+    nombres = [f["producto"] for f in _buscar("PS5")]
+    assert "PS5 Slim con lector" in nombres
+    assert "PlayStation 5 Digital" in nombres
+
+
+def test_los_disponibles_van_primero():
+    assert _buscar("PS5")[0]["producto"] == "PS5 Slim con lector"
+
+
+def test_los_fisicos_traen_las_tres_formas_de_pago():
+    fila = _buscar("PS5")[0]
+    assert fila["precio_efectivo"] == 2400000
+    assert fila["precio_transferencia"] == 2450000
+    assert fila["precio_financiado"] == 2880000
+
+
+def test_un_juego_digital_no_trae_fisicos():
+    assert _buscar("FC 26") == []
+
+
+def test_accesorios_por_nombre_y_plataforma():
+    assert [f["producto"] for f in _buscar("control xbox")] == ["Control Xbox Series"]
 
 
 if __name__ == "__main__":

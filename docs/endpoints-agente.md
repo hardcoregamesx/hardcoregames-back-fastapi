@@ -111,6 +111,30 @@ Notas de comportamiento:
 - Si la consulta no nombra ningun producto (`"precio ps5"`), devuelve
   `termino: ""` y una nota para que el agente pida el titulo.
 
+## Productos fisicos
+
+`agent-search` devuelve tambien una lista `fisicos` con consolas, controles y
+juegos fisicos que casen con la consulta. Viven en un Google Sheet, no en
+Postgres, asi que antes el agente no podia cotizar una consola.
+
+```json
+"fisicos": [
+  {"producto": "PS5 Slim con lector", "categoria": "CONSOLA",
+   "precio_efectivo": 2400000, "precio_transferencia": 2450000,
+   "precio_financiado": 2880000, "disponible": true,
+   "estado": "Nuevo", "ubicacion": "Medellin"}
+]
+```
+
+- Se busca por el termino **y** por la plataforma. `"PS5"` a secas deja el
+  termino vacio (es una plataforma), que es justo como pregunta quien quiere
+  una consola: antes eso devolvia "la consulta no nombra ningun producto".
+- Los disponibles van primero.
+- `precio_financiado` es el precio por Addi/Sistecredito. **Hardcore Games no
+  financia**: la financiacion la dan ellos, y el recargo es suyo.
+- Si el Sheet no responde se devuelve `fisicos: []` en vez de romper la
+  consulta: los digitales siguen sirviendo.
+
 ## `GET /products/agent-catalog`
 
 Volcado plano de todo el catalogo, para cachearlo en local y consultarlo con
