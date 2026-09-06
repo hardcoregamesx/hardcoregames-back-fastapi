@@ -23,6 +23,7 @@ from ..models import (
     ProductAlias,
 )
 from ..util.util_auth import get_current_user, get_current_user_optional, require_agent_api_key
+from .shopping_car import _effective_price
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -1309,19 +1310,50 @@ def _agent_variant_stmt():
     )
 
 
-def _agent_row(row) -> dict:
-    item = {
-        "producto": row.title,
-        "consola": row.consola,
-        "licencia": row.licencia,
-        "precio": row.precio,
-        "stock": row.stock,
-    }
-    if row.precio_descuento and row.precio_descuento != row.precio:
-        item["precio_descuento"] = row.precio_descuento
-    if row.duracion_dias_alquiler:
-        item["dias_alquiler"] = row.duracion_dias_alquiler
-    return item
+def _agregar_variantes(rows) -> list[dict]:
+    """Agrupa las filas de products_gamedetail que son la misma oferta.
+
+    Hay una fila por cuenta o lote, asi que la misma combinacion de producto,
+    consola y licencia sale repetida. Sin agrupar, el agente ve la oferta
+    duplicada y, peor, un stock parcial: diria "quedan 5" teniendo 7. Misma
+    clave de agrupacion que /products/combination-price.
+
+    El precio se expone ya resuelto. `precio_final` es lo que se cobra, con la
+    misma regla que el carrito (_effective_price), y `precio_lista` solo
+    aparece cuando hay descuento real, para poder decir "antes X, ahora Y".
+    Asi el agente no tiene que elegir entre dos numeros: ese es justo el error
+    que hace que se cotice mal.
+    """
+    grupos: dict[tuple, dict] = {}
+    for row in rows:
+        precio = row.precio or 0
+        precio_descuento = row.precio_descuento or 0
+        clave = (
+            row.title,
+            row.consola or "",
+            row.licencia or "",
+            row.duracion_dias_alquiler,
+            precio,
+            precio_descuento,
+        )
+        if clave in grupos:
+            grupos[clave]["stock"] += row.stock or 0
+            continue
+
+        item = {
+            "producto": row.title,
+            "consola": row.consola,
+            "licencia": row.licencia,
+            "precio_final": _effective_price(precio, precio_descuento) or precio,
+            "stock": row.stock or 0,
+        }
+        if precio_descuento and 0 < precio_descuento < precio:
+            item["precio_lista"] = precio
+        if row.duracion_dias_alquiler:
+            item["dias_alquiler"] = row.duracion_dias_alquiler
+        grupos[clave] = item
+
+    return sorted(grupos.values(), key=lambda i: (-i["stock"], i["precio_final"]))
 
 
 @router.get("/agent-search", dependencies=[Depends(require_agent_api_key)])
@@ -1355,24 +1387,24 @@ async def agent_search_products(
         .order_by(GameDetail.stock.desc(), GameDetail.precio.asc())
         .limit(200)
     )
-    rows = (await session.execute(stmt)).all()
+    items = _agregar_variantes((await session.execute(stmt)).all())
 
     # La plataforma acota el resultado, pero si no casa con ninguna fila se
     # devuelven todas: es preferible ofrecer otra consola a decir "no existe".
     if platforms:
-        casan = [r for r in rows if _console_matches(r.consola, platforms)]
+        casan = [i for i in items if _console_matches(i["consola"], platforms)]
         if casan:
-            rows = casan
+            items = casan
 
-    agotados = sum(1 for r in rows if (r.stock or 0) <= 0)
+    agotados = sum(1 for i in items if i["stock"] <= 0)
     if only_stock:
-        rows = [r for r in rows if (r.stock or 0) > 0]
+        items = [i for i in items if i["stock"] > 0]
 
     return {
         "q": q,
         "termino": search_norm,
         "plataformas": platforms,
-        "resultados": [_agent_row(r) for r in rows[:limit]],
+        "resultados": items[:limit],
         "agotados_ocultos": agotados if only_stock else 0,
     }
 
@@ -1391,11 +1423,11 @@ async def agent_catalog(
     if only_stock:
         stmt = stmt.where(GameDetail.stock > 0)
 
-    rows = (await session.execute(stmt)).all()
+    items = _agregar_variantes((await session.execute(stmt)).all())
     return {
         "generado": datetime.now(timezone.utc).isoformat(),
-        "total": len(rows),
-        "items": [_agent_row(r) for r in rows],
+        "total": len(items),
+        "items": items,
     }
 
 

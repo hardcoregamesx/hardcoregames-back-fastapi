@@ -9,8 +9,8 @@ Marketplace sin abrir el navegador ni conectarse a Postgres.
 
 | | `/products/search` | `/products/agent-search` |
 |---|---|---|
-| Precio | el **minimo** del producto | el de **cada variante** |
-| Stock | no lo devuelve | si |
+| Precio | el **minimo** del producto | el que se cobra, por variante |
+| Stock | no lo devuelve | si, sumado por oferta |
 | Consola | solo `id_console` | nombre (`PS5`, `Xbox Series X`) |
 | Payload | arrastra `description`, `image`, `calification`... | solo lo necesario |
 
@@ -57,16 +57,36 @@ curl -s -H "X-API-Key: $AGENT_API_KEY" \
 
 ```json
 {
-  "q": "FC 27 para PS5",
-  "termino": "fc27",
+  "q": "FC 26 para PS5",
+  "termino": "fc26",
   "plataformas": ["playstation5"],
   "resultados": [
-    {"producto": "FC 27 Standard", "consola": "PS5", "licencia": "Primaria",
-     "precio": 180000, "precio_descuento": 160000, "stock": 3}
+    {"producto": "EA FC 26 Standard", "consola": "PlayStation 5",
+     "licencia": "Secundaria", "precio_final": 99990,
+     "precio_lista": 169990, "stock": 7}
   ],
   "agotados_ocultos": 1
 }
 ```
+
+### El precio viene ya resuelto
+
+`precio_final` es **lo que se cobra**, con la misma regla que el carrito
+(`_effective_price` en `shopping_car.py`: el descuento manda si es mayor que 0 y
+menor que la lista). `precio_lista` solo aparece cuando hay descuento real, para
+poder decir "antes 169.990, ahora 99.990".
+
+Se expone asi a proposito. Devolver `precio` y `precio_descuento` y dejar que el
+agente elija es justo lo que hace que se cotice mal.
+
+### Las filas se agrupan por oferta
+
+`products_gamedetail` guarda una fila por cuenta o lote, asi que la misma
+combinacion de producto, consola y licencia sale repetida. Se agrupan con la
+misma clave que `/products/combination-price` y se **suma el stock**.
+
+Sin esto el agente ve la oferta cuatro veces y anuncia un stock parcial: diria
+"quedan 5" teniendo 7.
 
 Parametros: `q` (requerido), `only_stock` (por defecto `true`), `limit` (25).
 
@@ -95,10 +115,11 @@ curl -s -H "X-API-Key: $AGENT_API_KEY" \
 El stock si cambia durante el dia: usa el cache para conversar y confirma con
 `agent-search` antes de cerrar la venta.
 
-## Pendiente de verificar contra la BD real
+## Verificado en produccion
 
-`app/models.py:36-38` marca los FK de `GameDetail` con comentarios
-`# ajustar tabla/columna`, asi que esos nombres pueden no coincidir con la base
-de produccion. Antes de dar los endpoints por buenos, ejecuta una consulta real
-y comprueba que `consola` y `licencia` vienen rellenos. Si llegan en `null`, el
-join esta mal y hay que corregir los nombres de columna.
+Pese a los comentarios `# ajustar tabla/columna` de `app/models.py:36-38`, los
+joins resuelven bien: una consulta real devolvio `"consola": "PlayStation 5"` y
+`"licencia": "Secundaria"`, no `null`.
+
+Esa misma prueba destapo las filas duplicadas por lote, que es de donde salio el
+agrupado descrito arriba.
