@@ -32,6 +32,29 @@ Generala en el servidor, nunca en un chat ni en un commit:
 openssl rand -hex 32
 ```
 
+### Al rotarla: `restart` NO basta
+
+`docker compose restart` reinicia el proceso con la configuracion que ya tenia
+cargada: **no vuelve a leer `env_file`**. Se cambia la clave en el `.env`, la
+API sigue validando contra la anterior, y el sintoma es un 401 con todo
+aparentemente bien puesto.
+
+```bash
+# Cambiar la clave
+KEY=$(openssl rand -hex 32)
+sed -i "s|^AGENT_API_KEY=.*|AGENT_API_KEY=$KEY|" /root/hc/hc-fastapi.env
+
+# Recrear el contenedor (no `restart`)
+cd /root/hc
+docker compose up -d --force-recreate hc-fastapi
+
+# Comprobar que el contenedor tiene la nueva
+docker exec hc-fastapi printenv AGENT_API_KEY
+```
+
+Ese ultimo comando es la verdad: el contenedor es quien valida, no el archivo.
+Si los dos no coinciden, el cambio no se aplico.
+
 ### Dos formas de mandarla
 
 ```bash
