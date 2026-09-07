@@ -12,6 +12,21 @@ Claude se borra; esto no.
 | `enviados.log` | Una línea por mensaje enviado. Solo se añade. Es el único rastro de lo que salió. |
 | `canales.txt` | Qué canales atiende y en qué orden. Chatwoot siempre primero. |
 
+## Chatwoot va por API
+
+Listar la bandeja con el navegador costaba ~143.000 tokens y siete minutos,
+porque hacía falta abrir cada chat para saber quién había escrito último. La
+API de Chatwoot da ese dato de una, por unos cientos de tokens.
+
+Hace falta esto en el entorno (una vez):
+
+    CHATWOOT_URL    https://chatwoot.srv936408.hstgr.cloud
+    CHATWOOT_TOKEN  Chatwoot -> Perfil -> Configuración del perfil -> Token de acceso
+    CHATWOOT_CUENTA 1   (opcional)
+
+WhatsApp no tiene API, así que ese sigue por navegador — pero mirando solo los
+chats con badge de no leídos.
+
 ## Los dos canales, cada vuelta
 
 Se atienden Chatwoot y WhatsApp en cada vuelta, uno detrás de otro — nunca a

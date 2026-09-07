@@ -35,7 +35,18 @@ Una fila por conversación pendiente, máximo 25:
 
 Nada más: ni resúmenes, ni valoraciones, ni recomendaciones.
 
-## ATAJOS QUE AHORRAN MUCHO
-- Chatwoot: entra directo con el filtro puesto (Open + Unassigned). Menos
-  filas que leer.
-- WhatsApp Web: mira solo los chats con badge de no leídos.
+## CHATWOOT: USA LA API, NO EL NAVEGADOR
+Para el canal `chatwoot`, **no abras el navegador**. Ejecuta:
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\chatwoot-pendientes.ps1
+
+Devuelve directamente las filas en el formato de arriba, con el teléfono y el
+`ULTIMO` ya resueltos. Un solo uso de herramienta, unos cientos de tokens.
+
+Si el script imprime una línea que empieza por `ERROR`, dilo tal cual y
+termina. **No caigas al navegador por tu cuenta:** leer esa bandeja a mano
+cuesta 143.000 tokens, y es mejor saltarse una vuelta que gastar eso.
+
+## WHATSAPP: NAVEGADOR, PERO POCO
+No tiene API. Abre https://web.whatsapp.com y mira **solo** los chats con
+badge de no leídos. Una carga de página, sin clics.
