@@ -31,6 +31,10 @@ cliente le manda dos respuestas distintas.
 
 ## TRIAGE — decide antes de abrir
 
+**Se decide con lo que se ve en la lista. Abrir un chat para decidir si hay
+que atenderlo cuesta más que atenderlo.** Si dudas de una fila, déjala para
+la próxima vuelta: la bandeja no se va a ninguna parte.
+
 Desde la lista ya se ve quién escribió último:
 
 - Último mensaje NUESTRO → nada que contestar. SALTA, no lo abras.

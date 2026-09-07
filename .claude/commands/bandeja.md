@@ -29,21 +29,26 @@ empiezan por `#`). Si solo hay uno, haces solo ese.
 ## PROCESO
 
 ### Fase A — Chatwoot
-1. Un subagente `chat-chrome` en modo LISTAR de Chatwoot.
+1. Un subagente **`chat-listar`** con el canal `chatwoot`. Es barato y no
+   abre chats: si tarda minutos o gasta más de 20k tokens, algo va mal
+   y hay que decirlo.
 2. De esa lista guarda el NOMBRE y el TELÉFONO de **todas** las
    conversaciones, incluidas las que vas a saltar en el triage. Esa lista es
    lo único que evita responderle dos veces al mismo cliente.
-3. Aplica el TRIAGE y atiende las que lo necesiten, **máximo 6**, con un
-   subagente cada una, en serie.
+3. Aplica el TRIAGE sobre esa lista, **sin abrir nada**, y atiende solo las
+   que lo necesiten: **máximo 6**, un subagente `chat-chrome` cada una,
+   en serie.
+   Una fila con `ULTIMO=?` no es motivo para abrirla: mírala solo si el
+   texto visible parece una pregunta sin responder.
 
 ### Fase B — WhatsApp Web
-4. Un subagente `chat-chrome` en modo LISTAR de WhatsApp Web.
+4. Un subagente **`chat-listar`** con el canal `whatsapp`.
 5. **DESCARTA todo chat cuyo nombre o número aparezca en la lista de la fase
    A.** Ese cliente ya entra por Chatwoot; contestarle también aquí le manda
    dos respuestas distintas de dos sitios.
    Al comparar números ignora espacios, guiones, paréntesis y el prefijo +57:
    `+57 317 443 1627`, `3174431627` y `57 317 4431627` son el mismo cliente.
-6. Triage sobre lo que quede y atiende, **máximo 6**.
+6. Triage sobre lo que quede y atiende con `chat-chrome`, **máximo 6**.
 
 ### Si Chatwoot falla
 Si la fase A no se pudo hacer (no cargó, sesión caída), **NO hagas la fase B**.
