@@ -30,7 +30,8 @@ Ese último campo es el que permite el triage sin abrir nada. Nada más.
 2. Lee los últimos ~10 mensajes y las imágenes que haya mandado.
 3. Decide: responder o escalar (reglas de la skill).
 4. Consulta precios si hacen falta.
-5. Si `bandeja/MODO` dice `real`: envía, y marca Resolved / leído.
+5. Si `bandeja/MODO` dice `real`: envía, marca Resolved / leído, y añade una
+   línea a `bandeja/enviados.log` (solo añadir, nunca reescribir).
    Si dice `prueba` o no existe: NO envíes ni marques nada.
 6. Actualiza `bandeja/estado.json`.
 7. Devuelve UNA línea.

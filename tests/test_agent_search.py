@@ -57,9 +57,10 @@ def test_saludos_y_ruido_se_descartan():
     assert _split_agent_query("hola buenas tienen hades 2") == ("hades2", [])
 
 
-def _fila(consola, licencia, precio, precio_descuento, stock, dias=None):
+def _fila(consola, licencia, precio, precio_descuento, stock, dias=None, desc=None):
     return SimpleNamespace(
         title="EA FC 26 Standard",
+        description=desc,
         consola=consola,
         licencia=licencia,
         precio=precio,
@@ -108,6 +109,27 @@ def test_precios_distintos_no_se_mezclan():
         _fila("PlayStation 5", "Secundaria", 169990, 99990, 4),
     ])
     assert len(items) == 2
+
+
+def test_avisa_cuando_el_precio_no_es_el_total():
+    """Caso real de produccion: en PS Plus el precio de la BD es un abono
+    mensual, y eso solo esta escrito en la descripcion. Cotizarlo como precio
+    completo promete algo que no existe."""
+    item = _agregar_variantes([
+        _fila("PS5", "Suscripcion", 24990, 0, 3, dias=30,
+              desc="Suscripcion PS Plus. El valor mostrado es un abono mensual.")
+    ])[0]
+    assert "ojo_precio" in item
+    assert "abono" in item["ojo_precio"]
+    assert item["dias_alquiler"] == 30
+
+
+def test_una_descripcion_normal_no_ensucia_la_respuesta():
+    item = _agregar_variantes([
+        _fila("PS5", "Primaria", 99990, 0, 4,
+              desc="Juego completo, entrega inmediata por codigo.")
+    ])[0]
+    assert "ojo_precio" not in item
 
 
 def test_console_matches():

@@ -1,0 +1,8 @@
+# Canales que atiende el contestador, uno por vuelta del loop.
+# Quita el que no uses. Con el loop cada 5 min y dos canales, cada uno se
+# revisa cada 10 minutos.
+#
+# IMPORTANTE: si un canal ya entra por Chatwoot, NO lo pongas aquí también,
+# o el mismo cliente recibe dos respuestas distintas.
+chatwoot
+whatsapp

@@ -55,6 +55,13 @@ no lo pidió es trabajo tirado.
   la plataforma: `q=PS5`.
 - `agotados_ocultos > 0` sin resultados significa **agotado**, no "no lo
   tenemos". No es lo mismo.
+- **`precio_final` no siempre es el total.** En suscripciones (PS Plus y
+  similares) puede ser un abono, una mensualidad o un primer pago. Si la fila
+  trae `ojo_precio`, LEELO y díselo al cliente: "son $X al mes", no "$X y ya".
+  Cotizar un abono como si fuera el precio completo es prometer algo que no
+  existe, y se descubre al cobrar.
+- Si una fila trae `dias_alquiler`, es por tiempo limitado. Dilo siempre:
+  "$X por 30 días", nunca "$X" a secas.
 - NUNCA inventes, estimes ni redondees un precio. Si no lo tienes, dilo y
   escala.
 - NUNCA abras hardcoregames.co para mirar un precio: cuesta 40 veces más.
@@ -156,8 +163,25 @@ No propongas cambios de proceso, plantillas de WhatsApp ni arreglos de
 configuración. Si ves algo roto (mensajes que no salen, un canal caído),
 anótalo en UNA línea y sigue.
 
+## REGISTRO DE ENVIADOS (obligatorio en MODO real)
+
+Cada vez que envíes un mensaje a un cliente, añade UNA línea a
+`bandeja/enviados.log`:
+
+    2026-09-07 14:32 | whatsapp | Juan P. | precio FC26 PS5 | enviado
+
+Nunca borres ni reescribas ese archivo: solo se añade al final.
+
+Existe porque el envío es irreversible y no se narra en el chat. Sin este
+registro no hay forma de revisar qué se le dijo a quién. Si algo sale mal,
+esto es lo primero que se mira.
+
 ## MEMORIA
 
 El contexto NO es la memoria: se borra. La memoria es **Chatwoot** (Open =
-pendiente, Resolved = hecho) y `bandeja/estado.json` para los canales que no
-tienen ese estado.
+pendiente, Resolved = hecho), `bandeja/estado.json` para los canales sin ese
+estado, y `bandeja/enviados.log` para lo que ya salió.
+
+Lo que aprendas trabajando (un matiz de precio, una regla nueva) **no lo
+guardes solo en tu memoria personal**: dilo, para que se escriba aquí. Lo que
+vive únicamente en la memoria de una sesión se pierde al cerrarla.

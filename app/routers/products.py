@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, date, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -1228,6 +1229,27 @@ _PLATFORM_ALIASES = {
 # Una ficha marcada asi sirve para cualquier plataforma que pida el cliente.
 _CONSOLA_COMODIN = "multiplataforma"
 
+# El precio de la BD no siempre es el total: hay fichas (PS Plus y demas
+# suscripciones) donde es un abono, una mensualidad o un primer pago, y eso
+# solo esta escrito en la descripcion que redacta el equipo de ventas. Un
+# agente que cotice `precio_final` a secas en esos casos promete un precio que
+# no existe, asi que cuando la descripcion tiene una de estas senales se
+# devuelve recortada para que la lea antes de cotizar.
+_SENALES_PRECIO_PARCIAL = re.compile(
+    r"abono|mensual|por\s*mes|primer\s*pago|pago\s*inicial|cuota|renovaci|"
+    r"no\s*incluye|adicional|por\s*cada\s*mes",
+    re.IGNORECASE,
+)
+
+
+def _nota_precio(descripcion: str | None) -> str | None:
+    if not descripcion:
+        return None
+    texto = " ".join(descripcion.split())
+    if not _SENALES_PRECIO_PARCIAL.search(texto):
+        return None
+    return texto[:200] + ("..." if len(texto) > 200 else "")
+
 # Frases de plataforma que hay que unir ANTES de partir por espacios, o la
 # cola suelta ("series x" -> "x") se cuela en el termino de busqueda.
 _PLATFORM_PHRASES = [
@@ -1309,6 +1331,7 @@ def _agent_variant_stmt():
     return (
         select(
             Product.title,
+            Product.description,
             Consoles.descripcion.label("consola"),
             Licenses.descripcion.label("licencia"),
             GameDetail.precio,
@@ -1364,6 +1387,9 @@ def _agregar_variantes(rows) -> list[dict]:
             item["precio_lista"] = precio
         if row.duracion_dias_alquiler:
             item["dias_alquiler"] = row.duracion_dias_alquiler
+        nota = _nota_precio(row.description)
+        if nota:
+            item["ojo_precio"] = nota
         grupos[clave] = item
 
     return sorted(grupos.values(), key=lambda i: (-i["stock"], i["precio_final"]))
