@@ -16,34 +16,52 @@ Sigue la skill `bandeja-hardcore`.
 - Los subagentes van EN SERIE, uno a la vez. Hay un solo navegador: si lanzas
   varios se pelean por las pestañas y contestan chats cruzados.
 
-## UN CANAL POR VUELTA (turnos)
-Hay un solo navegador: si un subagente abre WhatsApp Web, la pestaña deja
-Chatwoot y el siguiente no encuentra nada. Por eso cada vuelta atiende UN
-canal y se van turnando.
+## LOS DOS CANALES, CADA VUELTA
+Se atienden Chatwoot y WhatsApp Web en cada vuelta, uno detrás de otro. Nunca
+a la vez: hay un solo navegador y las pestañas se pisan.
 
-1. Lee `bandeja/canales.txt` (un canal por línea, ignora líneas con `#`).
-2. Lee `bandeja/turno`: el canal que toca. Si no existe o no está en la lista,
-   empieza por el primero.
-3. Atiende SOLO ese canal.
-4. Al terminar, escribe en `bandeja/turno` el SIGUIENTE de la lista (y vuelve
-   al primero cuando llegues al final). Hazlo aunque no hubiera nada que
-   atender, o te quedas atascado en un canal vacío.
+El orden es fijo y no se cambia: **Chatwoot primero, WhatsApp después.**
+Chatwoot es el que manda para descartar clientes repetidos.
 
-Si en $ARGUMENTS viene un canal, atiende ese y NO toques el turno: es una
-petición puntual, no la rotación normal.
+Los canales están en `bandeja/canales.txt`, uno por línea (ignora las que
+empiezan por `#`). Si solo hay uno, haces solo ese.
 
 ## PROCESO
-1. Un subagente `chat-chrome` en modo LISTAR del canal que toca por turno.
-2. Aplica el TRIAGE de la skill sobre esa lista, sin abrir nada.
-3. Por cada chat que SÍ necesita respuesta, de uno en uno: un subagente
-   `chat-chrome` en modo ATENDER. Espera a que termine antes del siguiente.
-4. **Máximo 10 chats por vuelta.** Si quedan más, dilo y déjalos para la
-   siguiente: la bandeja sigue ahí.
-5. Muestra solo las líneas de resultado.
+
+### Fase A — Chatwoot
+1. Un subagente `chat-chrome` en modo LISTAR de Chatwoot.
+2. De esa lista guarda el NOMBRE y el TELÉFONO de **todas** las
+   conversaciones, incluidas las que vas a saltar en el triage. Esa lista es
+   lo único que evita responderle dos veces al mismo cliente.
+3. Aplica el TRIAGE y atiende las que lo necesiten, **máximo 6**, con un
+   subagente cada una, en serie.
+
+### Fase B — WhatsApp Web
+4. Un subagente `chat-chrome` en modo LISTAR de WhatsApp Web.
+5. **DESCARTA todo chat cuyo nombre o número aparezca en la lista de la fase
+   A.** Ese cliente ya entra por Chatwoot; contestarle también aquí le manda
+   dos respuestas distintas de dos sitios.
+   Al comparar números ignora espacios, guiones, paréntesis y el prefijo +57:
+   `+57 317 443 1627`, `3174431627` y `57 317 4431627` son el mismo cliente.
+6. Triage sobre lo que quede y atiende, **máximo 6**.
+
+### Si Chatwoot falla
+Si la fase A no se pudo hacer (no cargó, sesión caída), **NO hagas la fase B**.
+Sin la lista de Chatwoot no puedes descartar repetidos, y duplicar respuestas
+es peor que esperar cinco minutos. Dilo en una línea y termina.
+
+## REGLAS DEL HILO PRINCIPAL (tú)
+- NO abras el navegador. Nunca. Todo va dentro de subagentes `chat-chrome`.
+- Los subagentes van EN SERIE, uno a la vez.
+- Una vuelta con muchos chats tardará más de 5 minutos. Es normal: la
+  siguiente arranca cuando termine esta, no se solapan.
 
 ## AL CERRAR
-Una línea de resumen, nombrando el canal y cuál sigue:
-`chatwoot: N atendidos · N escalados · N saltados (motivo) · siguiente: whatsapp`
+Una línea por canal:
+`chatwoot: N atendidos · N escalados · N saltados`
+`whatsapp: N atendidos · N escalados · N saltados · N descartados por estar en Chatwoot`
+
+Si no hubo nada que hacer, "sin novedad" y termina.
 
 Si no había nada que hacer, di solo "sin novedad" y termina. No inventes
 trabajo para justificar la vuelta.

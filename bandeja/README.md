@@ -10,17 +10,20 @@ Claude se borra; esto no.
 | `estado.json` | Qué se atendió, qué se escaló, en canales sin estado propio. |
 | `catalogo.json` | Volcado diario de precios. Se consulta con grep: cero red. |
 | `enviados.log` | Una línea por mensaje enviado. Solo se añade. Es el único rastro de lo que salió. |
-| `canales.txt` | Qué canales atiende, uno por línea. Quita el que no uses. |
-| `turno` | Qué canal toca en la próxima vuelta. Se actualiza solo. |
+| `canales.txt` | Qué canales atiende y en qué orden. Chatwoot siempre primero. |
 
-## Por qué un canal por vuelta
+## Los dos canales, cada vuelta
 
-Hay un solo navegador. Si un subagente abre WhatsApp Web, la pestaña deja
-Chatwoot y el siguiente no encuentra nada — por eso los canales se turnan en
-vez de atenderse todos en la misma vuelta.
+Se atienden Chatwoot y WhatsApp en cada vuelta, uno detrás de otro — nunca a
+la vez, porque hay un solo navegador y las pestañas se pisan.
 
-Con dos canales y `/loop 5m`, cada uno se revisa cada 10 minutos. Si te parece
-lento, baja el intervalo (`/loop 2m`) o quita canales de `canales.txt`.
+Chatwoot va primero a propósito: de su lista se sacan los nombres y teléfonos
+que luego se descartan en WhatsApp, para que un cliente que escribe por los
+dos sitios no reciba dos respuestas distintas. Si Chatwoot falla, WhatsApp se
+salta esa vuelta: duplicar es peor que esperar.
+
+Tope de 6 chats por canal y vuelta. Una vuelta cargada tarda más de 5 minutos;
+la siguiente arranca cuando termine, no se solapan.
 
 ## Revisar qué se envió
 

@@ -1,8 +1,7 @@
-# Canales que atiende el contestador, uno por vuelta del loop.
-# Quita el que no uses. Con el loop cada 5 min y dos canales, cada uno se
-# revisa cada 10 minutos.
+# Canales que atiende el contestador. Se atienden TODOS en cada vuelta,
+# en este orden, uno detras de otro.
 #
-# IMPORTANTE: si un canal ya entra por Chatwoot, NO lo pongas aquí también,
-# o el mismo cliente recibe dos respuestas distintas.
+# Chatwoot va primero siempre: su lista de clientes es la que se usa para
+# descartar en WhatsApp a quien ya entra por ahi, y no responderle dos veces.
 chatwoot
 whatsapp
