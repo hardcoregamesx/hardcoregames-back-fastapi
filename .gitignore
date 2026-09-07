@@ -65,3 +65,4 @@ node_modules/
 *.whl
 
 # Misc
+.claude/
