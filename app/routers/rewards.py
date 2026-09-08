@@ -16,6 +16,7 @@ from ..models import (
     Roulette,
     RoulettePrize,
     RouletteSpin,
+    YoutubeMembershipLink,
 )
 from ..util.util_auth import get_current_user, get_current_complete_user
 
@@ -138,7 +139,7 @@ async def get_roulette_config(
     current_user: User = Depends(get_current_user),
 ):
     result = await session.execute(
-        select(Roulette).where(Roulette.is_active.is_(True)).order_by(Roulette.id.desc())
+        select(Roulette).where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(False)).order_by(Roulette.id.desc())
     )
     roulette = result.scalars().first()
     if not roulette:
@@ -212,7 +213,7 @@ async def spin_roulette(
         return _serialize_spin_result(existing_spin, prize, coupon, int(profile.puntos or 0))
 
     roulette_result = await session.execute(
-        select(Roulette).where(Roulette.is_active.is_(True)).order_by(Roulette.id.desc())
+        select(Roulette).where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(False)).order_by(Roulette.id.desc())
     )
     roulette = roulette_result.scalars().first()
     if not roulette:
@@ -327,6 +328,250 @@ async def spin_roulette(
         await session.commit()
     except IntegrityError:
         # Concurrent request beat us to the same idempotency_key.
+        await session.rollback()
+        existing = await session.execute(
+            select(RouletteSpin).where(RouletteSpin.idempotency_key == payload.idempotency_key)
+        )
+        existing_spin = existing.scalars().first()
+        if not existing_spin:
+            raise
+        prize_result = await session.execute(select(RoulettePrize).where(RoulettePrize.id == existing_spin.prize_id))
+        prize = prize_result.scalars().first()
+        coupon = None
+        if existing_spin.coupon_id:
+            coupon_result = await session.execute(select(Coupon).where(Coupon.id_coupon == existing_spin.coupon_id))
+            coupon = coupon_result.scalars().first()
+        profile = await _get_or_create_profile(session, current_user.id)
+        return _serialize_spin_result(existing_spin, prize, coupon, int(profile.puntos or 0))
+
+    await session.refresh(spin)
+    return _serialize_spin_result(spin, prize, coupon, points_after)
+
+
+# ============================================================================
+# Ruleta VIP (solo miembros de YouTube con membresia activa)
+# ----------------------------------------------------------------------------
+# Reusa rewards_roulette/rewards_rouletteprize/rewards_roulettespin en vez de
+# tablas paralelas: se distingue por Roulette.requires_membership = true (el
+# admin de Django crea esa segunda fila, con su propio set de premios) y usa
+# max_spins_per_month en vez de max_spins_per_day. La seleccion de premio y
+# el pago (_pick_weighted_prize, cupon/puntos, stock, idempotencia) son
+# exactamente el mismo codigo que la ruleta normal -- se duplica aqui en vez
+# de refactorizar spin_roulette porque ese endpoint ya esta en produccion
+# real con dinero/puntos de por medio, y el riesgo de una regresion ahi pesa
+# mas que el codigo repetido.
+# ============================================================================
+
+async def _get_active_membership_tier(session: AsyncSession, user_id: int) -> str | None:
+    result = await session.execute(
+        select(YoutubeMembershipLink).where(
+            YoutubeMembershipLink.user_id == user_id, YoutubeMembershipLink.status == "ACTIVE"
+        )
+    )
+    link = result.scalars().first()
+    return link.tier if link else None
+
+
+def _current_month_start() -> datetime:
+    now = datetime.now(timezone.utc)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+@router.get("/vip-roulette")
+async def get_vip_roulette_config(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    tier = await _get_active_membership_tier(session, current_user.id)
+    if tier is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Necesitas una membresía de YouTube activa para ver la ruleta VIP.",
+        )
+
+    result = await session.execute(
+        select(Roulette).where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(True)).order_by(Roulette.id.desc())
+    )
+    roulette = result.scalars().first()
+    if not roulette:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="La ruleta VIP todavía no está configurada.")
+
+    prizes_result = await session.execute(
+        select(RoulettePrize)
+        .where(RoulettePrize.roulette_id == roulette.id, RoulettePrize.is_active.is_(True))
+        .order_by(RoulettePrize.display_order.asc())
+    )
+    prizes = prizes_result.scalars().all()
+
+    profile = await _get_or_create_profile(session, current_user.id)
+    await session.commit()
+
+    spins_this_month = 0
+    if roulette.max_spins_per_month:
+        month_start = _current_month_start()
+        count_result = await session.execute(
+            select(func.count(RouletteSpin.id)).where(
+                RouletteSpin.user_id == current_user.id,
+                RouletteSpin.roulette_id == roulette.id,
+                RouletteSpin.created_at >= month_start,
+            )
+        )
+        spins_this_month = count_result.scalar() or 0
+
+    return {
+        "roulette_id": roulette.id,
+        "name": roulette.name,
+        "cost_points": roulette.cost_points,
+        "max_spins_per_month": roulette.max_spins_per_month,
+        "spins_this_month": spins_this_month,
+        "user_points": int(profile.puntos or 0),
+        "prizes": [_serialize_prize_public(p) for p in prizes],
+    }
+
+
+@router.post("/vip-roulette/spin")
+async def spin_vip_roulette(
+    payload: SpinRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_complete_user),
+):
+    tier = await _get_active_membership_tier(session, current_user.id)
+    if tier is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Necesitas una membresía de YouTube activa para girar la ruleta VIP.",
+        )
+
+    existing = await session.execute(
+        select(RouletteSpin).where(RouletteSpin.idempotency_key == payload.idempotency_key)
+    )
+    existing_spin = existing.scalars().first()
+    if existing_spin:
+        if existing_spin.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Clave de idempotencia inválida.")
+        prize_result = await session.execute(
+            select(RoulettePrize).where(RoulettePrize.id == existing_spin.prize_id)
+        )
+        prize = prize_result.scalars().first()
+        coupon = None
+        if existing_spin.coupon_id:
+            coupon_result = await session.execute(select(Coupon).where(Coupon.id_coupon == existing_spin.coupon_id))
+            coupon = coupon_result.scalars().first()
+        profile = await _get_or_create_profile(session, current_user.id)
+        return _serialize_spin_result(existing_spin, prize, coupon, int(profile.puntos or 0))
+
+    roulette_result = await session.execute(
+        select(Roulette).where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(True)).order_by(Roulette.id.desc())
+    )
+    roulette = roulette_result.scalars().first()
+    if not roulette:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="La ruleta VIP todavía no está configurada.")
+
+    if roulette.max_spins_per_month:
+        month_start = _current_month_start()
+        count_result = await session.execute(
+            select(func.count(RouletteSpin.id)).where(
+                RouletteSpin.user_id == current_user.id,
+                RouletteSpin.roulette_id == roulette.id,
+                RouletteSpin.created_at >= month_start,
+            )
+        )
+        if (count_result.scalar() or 0) >= roulette.max_spins_per_month:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Ya usaste tu giro VIP de este mes.",
+            )
+
+    profile = await _get_or_create_profile(session, current_user.id, for_update=True)
+
+    if int(profile.puntos or 0) < roulette.cost_points:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tienes suficientes puntos para girar la ruleta VIP.",
+        )
+
+    prizes_result = await session.execute(
+        select(RoulettePrize).where(RoulettePrize.roulette_id == roulette.id, RoulettePrize.is_active.is_(True))
+    )
+    prizes = list(prizes_result.scalars().all())
+
+    limited_prize_ids = [p.id for p in prizes if p.max_per_user is not None]
+    user_prize_counts: dict[int, int] = {}
+    if limited_prize_ids:
+        counts_result = await session.execute(
+            select(RouletteSpin.prize_id, func.count(RouletteSpin.id))
+            .where(RouletteSpin.user_id == current_user.id, RouletteSpin.prize_id.in_(limited_prize_ids))
+            .group_by(RouletteSpin.prize_id)
+        )
+        user_prize_counts = dict(counts_result.all())
+
+    eligible_prizes = [
+        p for p in prizes
+        if p.max_per_user is None or user_prize_counts.get(p.id, 0) < p.max_per_user
+    ]
+    prize = _pick_weighted_prize(eligible_prizes)
+
+    points_before = int(profile.puntos or 0)
+    points_after = points_before - roulette.cost_points
+    profile.puntos = points_after
+
+    await _record_points(
+        session,
+        user_id=current_user.id,
+        delta=-roulette.cost_points,
+        balance_after=points_after,
+        reason="ROULETTE_SPIN",
+        reference_type="vip_roulette",
+        reference_id=str(roulette.id),
+        description=f"Giro de ruleta VIP: {roulette.name}",
+    )
+
+    coupon: Coupon | None = None
+    if prize.prize_type in ("COUPON_FIXED", "COUPON_PERCENT"):
+        validity_minutes = prize.coupon_validity_minutes or DEFAULT_COUPON_VALIDITY_MINUTES
+        expiration = datetime.now(timezone.utc) + timedelta(minutes=validity_minutes)
+        coupon = Coupon(
+            name_coupon=f"VIP-{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}",
+            expiration_date=expiration,
+            is_valid=True,
+            user_id=current_user.id,
+            discount_type="FIXED_AMOUNT" if prize.prize_type == "COUPON_FIXED" else "PERCENTAGE",
+            fixed_amount=prize.value if prize.prize_type == "COUPON_FIXED" else 0,
+            percentage_off=prize.value if prize.prize_type == "COUPON_PERCENT" else 0,
+            source="ROULETTE",
+        )
+        session.add(coupon)
+        await session.flush()
+    elif prize.prize_type == "POINTS":
+        points_after += prize.value
+        profile.puntos = points_after
+        await _record_points(
+            session,
+            user_id=current_user.id,
+            delta=prize.value,
+            balance_after=points_after,
+            reason="ROULETTE_SPIN",
+            reference_type="vip_roulette_prize",
+            reference_id=str(prize.id),
+            description=f"Premio de ruleta VIP: {prize.name}",
+        )
+
+    if prize.stock is not None:
+        prize.stock = prize.stock - 1
+
+    spin = RouletteSpin(
+        user_id=current_user.id,
+        roulette_id=roulette.id,
+        prize_id=prize.id,
+        points_spent=roulette.cost_points,
+        coupon_id=coupon.id_coupon if coupon else None,
+        idempotency_key=payload.idempotency_key,
+    )
+    session.add(spin)
+
+    try:
+        await session.commit()
+    except IntegrityError:
         await session.rollback()
         existing = await session.execute(
             select(RouletteSpin).where(RouletteSpin.idempotency_key == payload.idempotency_key)
