@@ -17,6 +17,7 @@ from .routers import sorteos
 from .database import Base, engine
 from .routers import tracking
 from .routers import physical_products
+from .routers import membership
 
 app = FastAPI(title="Reactive FastAPI Microservice")
 
@@ -73,4 +74,5 @@ app.include_router(coupons.router)
 app.include_router(user_points.router)
 app.include_router(rewards.router)
 app.include_router(sorteos.router)
+app.include_router(membership.router)
 app.include_router(tracking.router)

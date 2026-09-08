@@ -18,10 +18,35 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import GoogleOAuthCredential
+from .util_auth import SECRET_KEY
+
+# Firma el `state` del flujo OAuth del miembro (mismo mecanismo que
+# reset_serializer en util_auth.py, salt propia para no mezclar tokens de
+# distintos flujos aunque comparta SECRET_KEY).
+_state_serializer = URLSafeTimedSerializer(SECRET_KEY, salt="youtube-oauth-state")
+STATE_MAX_AGE_SECONDS = 600  # tiempo de sobra para completar el consentimiento de Google
+
+
+def sign_state(user_id: int) -> str:
+    return _state_serializer.dumps({"user_id": user_id})
+
+
+def unsign_state(state: str) -> int:
+    """Devuelve el user_id codificado en `state`, o levanta YoutubeApiError
+    si esta vencido o fue manipulado."""
+    try:
+        data = _state_serializer.loads(state, max_age=STATE_MAX_AGE_SECONDS)
+    except SignatureExpired:
+        raise YoutubeApiError("El enlace de conexión con YouTube venció, intenta de nuevo.")
+    except BadSignature:
+        raise YoutubeApiError("El enlace de conexión con YouTube no es válido.")
+    return data["user_id"]
+
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
