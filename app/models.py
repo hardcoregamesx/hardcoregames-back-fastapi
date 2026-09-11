@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint, Numeric, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -325,7 +325,7 @@ class PointTransaction(Base):
     __tablename__ = "rewards_pointtransaction"
     __table_args__ = (
         CheckConstraint(
-            "reason IN ('PURCHASE','ROULETTE_SPIN','COUPON','EXCHANGE','ADMIN_ADJUST','REFUND')",
+            "reason IN ('PURCHASE','ROULETTE_SPIN','COUPON','EXCHANGE','ADMIN_ADJUST','REFUND','YOUTUBE_MEMBER_CLAIM')",
             name="rewards_pointtransaction_reason_check",
         ),
     )
@@ -355,6 +355,12 @@ class Roulette(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     cost_points = Column(Integer, nullable=False, default=0)
     max_spins_per_day = Column(Integer, nullable=True)
+    # Ruleta VIP: reusa esta misma tabla en vez de un modelo aparte, ver
+    # membership_youtubemembershiplink. requires_membership decide cual
+    # ruleta devuelve GET /rewards/roulette vs GET /rewards/vip-roulette;
+    # max_spins_per_month es la variante mensual de max_spins_per_day.
+    requires_membership = Column(Boolean, nullable=False, default=False)
+    max_spins_per_month = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
@@ -409,6 +415,101 @@ class RouletteSpin(Base):
     roulette = relationship("Roulette", backref="spins")
     prize = relationship("RoulettePrize", backref="spins")
     coupon = relationship("Coupon", backref="roulette_spin")
+
+
+# ============================================================================
+# MEMBERSHIP (miembros pagos del canal de YouTube)
+# ----------------------------------------------------------------------------
+# Tablas creadas a mano por SQL directo (ver membership/sql/ en el repo
+# django, que es quien administra el panel de estas tablas) — no las crea
+# create_all. Django las espeja con managed = False, igual que aqui.
+# ============================================================================
+
+class YoutubeMembershipLink(Base):
+    """Vinculo 1 a 1 cuenta-hardcoregames <-> canal de YouTube. `status`
+    solo lo cambia el sync diario (app/jobs/sync_youtube_members.py); nunca
+    el flujo de conexion, que no es prueba de ser miembro pago."""
+
+    __tablename__ = "membership_youtubemembershiplink"
+    __table_args__ = (
+        CheckConstraint("tier IN ('LOW','MID','HIGH')", name="membership_youtubemembershiplink_tier_check"),
+        CheckConstraint("status IN ('ACTIVE','INACTIVE')", name="membership_youtubemembershiplink_status_check"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False, unique=True)
+    youtube_channel_id = Column(String(64), nullable=False, unique=True)
+    youtube_display_name = Column(String(255), nullable=False, default="")
+    tier = Column(String(10), nullable=True)
+    status = Column(String(10), nullable=False, default="INACTIVE")
+    linked_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", backref="youtube_membership", uselist=False)
+
+
+class MembershipLevelMapping(Base):
+    """Nombre real del nivel en YouTube Studio -> tier interno. Editable
+    desde el admin de Django, la sync diaria lee esta tabla en cada corrida."""
+
+    __tablename__ = "membership_levelmapping"
+    __table_args__ = (
+        CheckConstraint("tier IN ('LOW','MID','HIGH')", name="membership_levelmapping_tier_check"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    google_level_name = Column(String(255), nullable=False, unique=True)
+    tier = Column(String(10), nullable=False)
+
+
+class MembershipPointsClaim(Base):
+    """Un reclamo semanal de puntos VIP. El UniqueConstraint(user, semana)
+    es toda la logica de 'una vez por semana, sin acumular atrasos'."""
+
+    __tablename__ = "membership_pointsclaim"
+    __table_args__ = (
+        UniqueConstraint("user_id", "week_start_date", name="membership_pointsclaim_user_id_week_start_date_key"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    week_start_date = Column(Date, nullable=False)
+    points_awarded = Column(Integer, nullable=False)
+    claimed_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    user = relationship("User", backref="membership_points_claims")
+
+
+class MembershipDiscountLog(Base):
+    """Auditoria de cada vez que el descuento VIP se aplico de verdad en un
+    checkout, para medir impacto real en margen."""
+
+    __tablename__ = "membership_discountlog"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    transaction_id = Column(Integer, ForeignKey("products_transactions.id_transaction"), nullable=False)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    tier = Column(String(10), nullable=False)
+    percent_applied = Column(Numeric(5, 2), nullable=False)
+    amount_saved = Column(Integer, nullable=False)
+    applied_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    user = relationship("User", backref="membership_discount_logs")
+
+
+class GoogleOAuthCredential(Base):
+    """Credenciales OAuth de servidor a servidor (solo la del dueño del
+    canal, scope youtube.channel-memberships.creator). Vive en la base, no
+    en .env, para poder rotarla desde el admin sin redeploy."""
+
+    __tablename__ = "membership_googleoauthcredential"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    provider = Column(String(30), nullable=False, unique=True)
+    refresh_token = Column(Text, nullable=False)
+    access_token_cache = Column(Text, nullable=False, default="")
+    access_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
 # ============================================================================

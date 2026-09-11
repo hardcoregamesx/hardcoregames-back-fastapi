@@ -1,13 +1,31 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, conint
 
 from ..database import get_session
-from ..models import User, UserCustomized, PointTransaction
-from ..util.util_auth import get_current_user
+from ..models import User, UserCustomized, PointTransaction, MembershipPointsClaim, YoutubeMembershipLink
+from ..util.util_auth import get_current_user, get_current_complete_user
 
 router = APIRouter(prefix="/users", tags=["user-points"])
+
+# Puntos VIP por semana segun tier (bajo/medio = 1, alto = 2). Mismos tiers
+# que MEMBERSHIP_DISCOUNT_PERCENT en products/views.py del repo django --
+# si se cambia uno, cambiar el otro.
+MEMBERSHIP_WEEKLY_POINTS = {
+    "LOW": 1,
+    "MID": 1,
+    "HIGH": 2,
+}
+
+
+class MembershipPointsClaimResponse(BaseModel):
+    points_awarded: int
+    balance_after: int
+    week_start_date: str
 
 
 class PointsResponse(BaseModel):
@@ -136,4 +154,73 @@ async def exchange_points_for_balance(
         balance_after=int(profile.balance_exchange or 0),
         exchanged_points=exchanged_points,
         exchanged_amount_cop=exchanged_amount_cop,
+    )
+
+
+@router.post("/me/membership-points/claim", response_model=MembershipPointsClaimResponse)
+async def claim_membership_points(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_complete_user),
+):
+    """Reclamo semanal de puntos VIP para miembros de YouTube con
+    membresía activa. Usa-o-pierde: una semana no reclamada no se acumula
+    -- el UniqueConstraint(user, week_start_date) es toda la lógica de
+    'una vez por semana', dejando que la propia base rechace un segundo
+    intento en vez de necesitar un SELECT previo con condición de carrera."""
+
+    link_result = await session.execute(
+        select(YoutubeMembershipLink).where(YoutubeMembershipLink.user_id == current_user.id)
+    )
+    link = link_result.scalars().first()
+    if link is None or link.status != "ACTIVE" or not link.tier:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Necesitas una membresía de YouTube activa para reclamar estos puntos.",
+        )
+
+    points_to_award = MEMBERSHIP_WEEKLY_POINTS.get(link.tier, 0)
+    if points_to_award <= 0:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tu nivel de membresía no otorga puntos VIP.")
+
+    today = datetime.now(timezone.utc).date()
+    week_start_date = today - timedelta(days=today.weekday())  # lunes de la semana ISO actual
+
+    claim = MembershipPointsClaim(
+        user_id=current_user.id,
+        week_start_date=week_start_date,
+        points_awarded=points_to_award,
+        claimed_at=datetime.now(timezone.utc),
+    )
+    session.add(claim)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ya reclamaste tus puntos VIP de esta semana.")
+
+    # Mismo patron de bloqueo de fila que el canje de puntos, para que dos
+    # reclamos concurrentes (aunque ya bloqueados por el UniqueConstraint de
+    # arriba) nunca puedan pisarse el balance_after.
+    profile = await _get_or_create_user_customized(session, current_user, for_update=True)
+    points_after = int(profile.puntos or 0) + points_to_award
+    profile.puntos = points_after
+
+    session.add(
+        PointTransaction(
+            user_id=current_user.id,
+            delta=points_to_award,
+            balance_after=points_after,
+            reason="YOUTUBE_MEMBER_CLAIM",
+            reference_type="membership_points_claim",
+            reference_id=str(claim.id) if claim.id else None,
+            description=f"Reclamo semanal VIP ({link.tier}), semana del {week_start_date.isoformat()}",
+        )
+    )
+
+    await session.commit()
+
+    return MembershipPointsClaimResponse(
+        points_awarded=points_to_award,
+        balance_after=points_after,
+        week_start_date=week_start_date.isoformat(),
     )
