@@ -1,4 +1,7 @@
+import os
 from datetime import timedelta
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +22,11 @@ from app.util.util_auth import (
 from app.repositories import auth as auth_repo
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+# Backend interno de Django, alcanzable dentro de hc-net (ver docker-compose de hc).
+# Aqui se valida (y se consume, de un solo uso) el codigo de password reset
+# antes de tocar la contrasena -- ver users/views.py:confirm_password_reset.
+DJANGO_INTERNAL_URL = os.getenv("DJANGO_INTERNAL_URL", "http://hc-django:8000")
 
 class UserRegister(BaseModel):
     username: str
@@ -228,6 +236,22 @@ async def reset_password(payload: ResetPasswordRequest, session: AsyncSession = 
     user = await auth_repo.get_user_by_email(session, email=payload.email)
     if not user:
         raise HTTPException(status_code=400, detail="El usuario ya no existe")
+
+    # Consume el codigo de un solo uso en Django (quien lo genero y envio por
+    # correo). Sin esto, cualquiera que supiera el email podia resetear la
+    # contrasena sin el codigo -- ver users/views.py:confirm_password_reset.
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{DJANGO_INTERNAL_URL}/users/confirmPasswordReset/",
+                json={"username": payload.email, "token": payload.token},
+            )
+        confirmation = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="No se pudo validar el codigo, intenta de nuevo")
+
+    if confirmation.get("code") != "00":
+        raise HTTPException(status_code=400, detail=confirmation.get("message", "Codigo invalido o expirado"))
 
     await auth_repo.update_user_password(session, user=user, new_password=payload.new_password)
     return {"message": "Contraseña actualizada correctamente"}
