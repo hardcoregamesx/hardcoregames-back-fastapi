@@ -26,6 +26,13 @@ SHEET_ID = "1nqroaF8p2FYTfBSI5xep9Sf92mYNzutHCvIhBX295hA"
 SHEET_GID = "0"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
 
+# Columnas esperadas, en orden (A-H): PRODUCTO, PRECIO, ESTADO, TIENE CAJA,
+# UBICACION, IMAGEN, PLATAFORMA, NOMBRE_CORTO. La H es opcional y nueva: el
+# equipo de ventas escribe la A como el combo completo ("PS5 slim usada + 3
+# juegos + control extra"), así que sin nombre corto el título y el link
+# compartido del producto arrastran ese texto largo completo. Mientras una
+# fila no tenga la H llena, el frontend cae de vuelta al nombre completo.
+
 # Solo aplica a productos con precio en efectivo superior a este umbral.
 TRANSFER_SURCHARGE = 50_000
 TRANSFER_SURCHARGE_MIN_PRICE = 600_000
@@ -101,8 +108,8 @@ def _parse_csv(text: str) -> list[dict]:
     category_state = "CONSOLA"  # default hasta el primer encabezado de seccion
 
     for row in rows[1:]:
-        row = row + [""] * (7 - len(row))  # tolera filas más cortas
-        product, price_raw, status_raw, has_box_raw, location_raw, image_raw, platform_raw = row[:7]
+        row = row + [""] * (8 - len(row))  # tolera filas más cortas
+        product, price_raw, status_raw, has_box_raw, location_raw, image_raw, platform_raw, short_name_raw = row[:8]
 
         if _is_section_row(product, price_raw, status_raw, location_raw):
             header = product.strip().upper()
@@ -132,6 +139,7 @@ def _parse_csv(text: str) -> list[dict]:
         products.append(
             {
                 "name": product.strip(),
+                "short_name": short_name_raw.strip() or None,
                 "available": not sold_out,
                 "price_cash": price_cash,
                 "price_transfer": price_transfer,
