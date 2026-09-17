@@ -25,6 +25,9 @@ class Product(Base):
     oferta_semana = Column(Boolean, default=False)
     type_id_id = Column(String(50), default="")
     tipo_juego_id = Column(String(50), default="")
+    # Fecha de lanzamiento futura -> habilita el modo "reserva" en sus
+    # variantes (docs/cuotas-y-reserva.md §3). NULL para el catalogo normal.
+    fecha_lanzamiento = Column(Date, nullable=True)
     consoles = relationship("Consoles", secondary=products_products_consola, back_populates="products", lazy="selectin")
 
 
@@ -41,6 +44,17 @@ class GameDetail(Base):
     stock = Column(Integer, default=0)
     precio = Column(Integer, default=0)
     precio_descuento = Column(Integer, default=0)
+
+    # Cuotas y reserva (docs/cuotas-y-reserva.md §3). Espejo a mano de las
+    # columnas que agrega el SQL de Django (products/sql/2026-09-cuotas-reserva.sql)
+    # sobre products_gamedetail -- managed=False del lado Django, y aqui
+    # tampoco se crean/alteran via create_all porque la tabla ya existe.
+    cuotas_activas = Column(Boolean, nullable=False, default=False)
+    num_cuotas = Column(Integer, nullable=False, default=3)
+    valor_cuota = Column(Integer, nullable=False, default=0)
+    cuota_inicial = Column(Integer, nullable=True)
+    reserva_activa = Column(Boolean, nullable=False, default=False)
+    monto_reserva = Column(Integer, nullable=False, default=20000)
 
     # relaciones — ajusta los nombres de las clases si difieren en tu proyecto
     producto = relationship("Product", backref="game_details")
@@ -227,9 +241,92 @@ class ShoppingCar(Base):
     user_id = Column("usuario_id", Integer, ForeignKey("auth_user.id"), nullable=False)
     product_id = Column("producto_id", Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=False)
     estado = Column(Boolean, nullable=False, default=True)
+    # 'contado' | 'cuotas' | 'reserva' (docs/cuotas-y-reserva.md §3). Default
+    # 'contado' a nivel de columna: los clientes viejos que hacen POST sin
+    # mandar este campo siguen comprando de contado sin enterarse del cambio.
+    modo_pago = Column(String(10), nullable=False, default="contado")
 
     user = relationship("User", backref="shopping_cars")
     product = relationship("GameDetail", backref="shopping_cars")
+
+
+# ============================================================================
+# CUOTAS Y RESERVA (docs/cuotas-y-reserva.md, fase 1)
+# ----------------------------------------------------------------------------
+# Tablas creadas por SQL directo del lado Django (products/sql/2026-09-cuotas-
+# reserva.sql, idempotente con IF NOT EXISTS). Django las espeja con
+# managed = False; aqui simplemente se declaran las columnas -- create_all
+# solo las crearia si la tabla no existiera todavia (checkfirst por defecto),
+# nunca las altera si ya existen con otro esquema.
+# ============================================================================
+
+class PaymentPlan(Base):
+    """Un plan de cuotas o de reserva sobre una variante (GameDetail). Una
+    fila = un plan; sus cuotas viven en PaymentInstallment. Ver §3.1 para los
+    estados y §3.2 para como se congela el precio y se arman los montos."""
+
+    __tablename__ = "products_paymentplan"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('cuotas', 'reserva')", name="products_paymentplan_tipo_check"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    gamedetail_id = Column(Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=False)
+    tipo = Column(String(10), nullable=False)
+    estado = Column(String(20), nullable=False)
+    titulo_snapshot = Column(String(300), nullable=False, default="")
+    precio_total = Column(Integer, nullable=False)
+    descuento = Column(Integer, nullable=False, default=0)
+    num_cuotas = Column(Integer, nullable=False, default=1)
+    valor_cuota = Column(Integer, nullable=False, default=0)
+    cuota_inicial = Column(Integer, nullable=True)
+    monto_reserva = Column(Integer, nullable=True)
+    total_pagado = Column(Integer, nullable=False, default=0)
+    mora_acumulada = Column(Integer, nullable=False, default=0)
+    mora_exenta = Column(Boolean, nullable=False, default=False)
+    retirado = Column(Boolean, nullable=False, default=False)
+    token = Column(String(64), nullable=False, unique=True)
+    transaction_origen_id = Column(Integer, ForeignKey("products_transactions.id_transaction"), nullable=True)
+    saledetail_id = Column(Integer, ForeignKey("products_saledetail.id_sale_detail"), nullable=True)
+    cuenta_asignada_id = Column(Integer, ForeignKey("products_productaccounts.id_product_accounts"), nullable=True)
+    fecha_asignacion = Column(DateTime(timezone=True), nullable=True)
+    fecha_limite_pago = Column(DateTime(timezone=True), nullable=True)
+    notas = Column(Text, nullable=False, default="")
+    fecha_creacion = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    fecha_actualizacion = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="payment_plans")
+    gamedetail = relationship("GameDetail", backref="payment_plans")
+    transaction_origen = relationship("Transactions", backref="payment_plans_origen", foreign_keys=[transaction_origen_id])
+    saledetail = relationship("SaleDetail", backref="payment_plan")
+    cuenta_asignada = relationship("ProductAccounts", backref="payment_plans_asignados")
+
+
+class PaymentInstallment(Base):
+    """Una cuota individual de un PaymentPlan. La cuota #1 siempre nace
+    'pagada' (se cobro en el checkout); el resto nace 'pendiente'. Ver §3.2."""
+
+    __tablename__ = "products_paymentinstallment"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "numero", name="products_paymentinstallment_plan_id_numero_key"),
+        CheckConstraint("estado IN ('pendiente', 'pagada', 'cancelada')", name="products_paymentinstallment_estado_check"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey("products_paymentplan.id", ondelete="CASCADE"), nullable=False)
+    numero = Column(Integer, nullable=False)
+    monto = Column(Integer, nullable=False)
+    mora = Column(Integer, nullable=False, default=0)
+    fecha_vencimiento = Column(Date, nullable=True)
+    estado = Column(String(12), nullable=False, default="pendiente")
+    fecha_pago = Column(DateTime(timezone=True), nullable=True)
+    transaction_id = Column(Integer, ForeignKey("products_transactions.id_transaction"), nullable=True)
+    metodo = Column(String(30), nullable=True)
+    ultimo_recordatorio = Column(DateTime(timezone=True), nullable=True)
+
+    plan = relationship("PaymentPlan", backref="cuotas")
+    transaction = relationship("Transactions", backref="payment_installments")
 
 
 class Coupon(Base):

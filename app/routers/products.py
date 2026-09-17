@@ -145,6 +145,81 @@ async def _get_min_discount_prices_for_products(
     return {producto_id: min_discount for producto_id, min_discount in rows}
 
 
+async def _get_plan_aggregates_for_products(
+    session: AsyncSession, product_ids: list[int]
+) -> dict[int, dict]:
+    """Agregados de cuotas/reserva para tarjetas de producto (docs/cuotas-y-
+    reserva.md §5). Dos consultas agrupadas por producto, nunca una por
+    producto -- evita el N+1 que pediria el listado.
+
+    - cuotas_desde: valor_cuota minimo entre variantes con cuotas_activas y
+      stock>0 (o None). cuotas_num: num_cuotas de esa misma variante.
+    - reserva_monto: monto_reserva minimo entre variantes con reserva_activa,
+      solo si el producto tiene fecha_lanzamiento futura (o None).
+    """
+    empty = {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}
+    if not product_ids:
+        return {}
+
+    today = datetime.utcnow().date()
+
+    # DISTINCT ON emulado con row_number(): la fila con menor valor_cuota por
+    # producto, junto con el num_cuotas que le corresponde a esa variante.
+    ranked = (
+        select(
+            GameDetail.producto_id.label("producto_id"),
+            GameDetail.valor_cuota.label("valor_cuota"),
+            GameDetail.num_cuotas.label("num_cuotas"),
+            func.row_number()
+            .over(
+                partition_by=GameDetail.producto_id,
+                order_by=GameDetail.valor_cuota.asc(),
+            )
+            .label("rn"),
+        )
+        .where(
+            GameDetail.producto_id.in_(product_ids),
+            GameDetail.cuotas_activas.is_(True),
+            GameDetail.stock > 0,
+            GameDetail.valor_cuota > 0,
+        )
+        .subquery()
+    )
+    cuotas_result = await session.execute(
+        select(ranked.c.producto_id, ranked.c.valor_cuota, ranked.c.num_cuotas)
+        .where(ranked.c.rn == 1)
+    )
+    cuotas_map = {
+        producto_id: (valor_cuota, num_cuotas)
+        for producto_id, valor_cuota, num_cuotas in cuotas_result.all()
+    }
+
+    reserva_result = await session.execute(
+        select(GameDetail.producto_id, func.min(GameDetail.monto_reserva))
+        .select_from(GameDetail)
+        .join(Product, Product.id_product == GameDetail.producto_id)
+        .where(
+            GameDetail.producto_id.in_(product_ids),
+            GameDetail.reserva_activa.is_(True),
+            GameDetail.monto_reserva > 0,
+            Product.fecha_lanzamiento.is_not(None),
+            Product.fecha_lanzamiento > today,
+        )
+        .group_by(GameDetail.producto_id)
+    )
+    reserva_map = {producto_id: monto for producto_id, monto in reserva_result.all()}
+
+    out: dict[int, dict] = {}
+    for pid in product_ids:
+        cuotas_desde, cuotas_num = cuotas_map.get(pid, (None, None))
+        out[pid] = {
+            "cuotas_desde": cuotas_desde,
+            "cuotas_num": cuotas_num,
+            "reserva_monto": reserva_map.get(pid),
+        }
+    return out
+
+
 async def _product_matches_coupon_restrictions(
     session: AsyncSession,
     coupon_id: int,
@@ -504,6 +579,7 @@ async def list_products(
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -521,6 +597,8 @@ async def list_products(
             "type_id_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -560,6 +638,7 @@ async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession =
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -578,6 +657,8 @@ async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession =
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -607,6 +688,7 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     # serializar a dicts simples para respuesta JSON
     data = [
@@ -624,6 +706,8 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
             "oferta_semana": p.oferta_semana,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -663,6 +747,7 @@ async def get_week_offers(
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -681,6 +766,8 @@ async def get_week_offers(
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -906,6 +993,7 @@ async def filter_products(
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -924,6 +1012,8 @@ async def filter_products(
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -981,6 +1071,7 @@ async def get_products_from_date(
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -999,6 +1090,8 @@ async def get_products_from_date(
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -1053,6 +1146,12 @@ async def get_combination_price_by_game(id_product: int, session: AsyncSession =
             GameDetail.stock,
             GameDetail.precio,
             GameDetail.precio_descuento,
+            GameDetail.cuotas_activas,
+            GameDetail.num_cuotas,
+            GameDetail.valor_cuota,
+            GameDetail.cuota_inicial,
+            GameDetail.reserva_activa,
+            GameDetail.monto_reserva,
         )
         .select_from(GameDetail)
         .join(Consoles, GameDetail.consola_id == Consoles.id_console, isouter=True)
@@ -1100,6 +1199,15 @@ async def get_combination_price_by_game(id_product: int, session: AsyncSession =
                 "precio": precio,
                 "precio_descuento": precio_descuento,
                 "duracion_dias_alquiler": row.duracion_dias_alquiler,
+                # Cuotas y reserva de la variante (docs/cuotas-y-reserva.md §5).
+                # Mismos valores para todas las filas fisicas de la misma
+                # combinacion -- se toman de la primera fila del grupo.
+                "cuotas_activas": bool(row.cuotas_activas),
+                "num_cuotas": row.num_cuotas,
+                "valor_cuota": row.valor_cuota,
+                "cuota_inicial": row.cuota_inicial,
+                "reserva_activa": bool(row.reserva_activa),
+                "monto_reserva": row.monto_reserva,
             }
         else:
             groups[key]["stock"] += row.stock or 0
@@ -1157,6 +1265,7 @@ async def search_products(q: str, offset: int = 0, limit: int = 20, use_trgm: bo
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -1170,6 +1279,8 @@ async def search_products(q: str, offset: int = 0, limit: int = 20, use_trgm: bo
             "type_id_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -1475,6 +1586,7 @@ async def get_most_sold_products(
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -1494,6 +1606,8 @@ async def get_most_sold_products(
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
             "sales_count": int(sales_counts.get(p.id_product, 0)),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -1572,6 +1686,7 @@ async def get_recommended_products(
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
     min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
 
     data = [
         {
@@ -1588,6 +1703,8 @@ async def get_recommended_products(
             "oferta_semana": p.oferta_semana,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -1642,6 +1759,7 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
         "price": getattr(prices_game, "precio", None) if prices_game else None,
         "type_id_id": getattr(product, "type_id_id", None),
         "tipo_juego_id": getattr(product, "tipo_juego_id", None),
+        "fecha_lanzamiento": product.fecha_lanzamiento.isoformat() if getattr(product, "fecha_lanzamiento", None) else None,
         "consoles": [
             {"id_console": c.id_console}
             for c in getattr(product, "consoles", []) or []

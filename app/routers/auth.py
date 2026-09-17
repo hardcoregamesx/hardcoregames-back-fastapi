@@ -12,6 +12,7 @@ from app.database import get_session
 from app.models import LikedGame, Product, User, UserCustomized, PointTransaction
 from app.util.util_auth import (
     verify_password,
+    get_password_hash,
     create_access_token,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     generate_reset_token,
@@ -87,6 +88,11 @@ class PointsExchangeResponse(BaseModel):
     exchanged_points: int
     amount_cop: int
     remaining_points: int
+
+
+class SetPasswordRequest(BaseModel):
+    new_password: constr(min_length=8)
+    confirm_password: constr(min_length=8)
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(user: UserRegister, session: AsyncSession = Depends(get_session)):
@@ -443,3 +449,41 @@ async def exchange_points(
         amount_cop=amount_cop,
         remaining_points=profile.puntos,
     )
+
+
+@router.post("/set-password")
+async def set_password(
+    payload: SetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """El invitado del checkout (docs/cuotas-y-reserva.md §1) recibe una
+    cuenta con contraseña aleatoria y ``is_guest_account=True``. Este
+    endpoint le deja poner su propia contraseña para poder loguearse
+    despues -- solo funciona mientras siga siendo cuenta de invitado, para
+    que no sirva como un "cambiar contraseña" generico (eso ya lo cubre
+    reset-password via correo)."""
+
+    result = await session.execute(
+        select(UserCustomized).where(UserCustomized.user_id == current_user.id)
+    )
+    profile = result.scalars().first()
+
+    if profile is None or not profile.is_guest_account:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Esta cuenta ya tiene contraseña propia.",
+        )
+
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="Las contraseñas no coinciden")
+
+    user = await session.get(User, current_user.id)
+    user.password = get_password_hash(payload.new_password)
+    profile.is_guest_account = False
+
+    session.add(user)
+    session.add(profile)
+    await session.commit()
+
+    return {"message": "Contraseña creada correctamente"}

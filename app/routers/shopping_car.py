@@ -9,10 +9,16 @@ from app.util.util_auth import get_current_user
 
 router = APIRouter(prefix="/shopping-car", tags=["shopping-car"])
 
+MODOS_PAGO_VALIDOS = ("contado", "cuotas", "reserva")
+
 
 class ShoppingCarCreate(BaseModel):
     product_id: int
     estado: bool | None = True
+    # 'contado' | 'cuotas' | 'reserva' (docs/cuotas-y-reserva.md §5). Default
+    # 'contado' para que los clientes viejos que no mandan este campo sigan
+    # comprando de contado exactamente como antes.
+    modo_pago: str | None = "contado"
 
 
 class ShoppingCarUpdate(BaseModel):
@@ -42,6 +48,16 @@ class ShoppingCarRead(BaseModel):
     consola: int | None = None
     licencia: int | None = None
     duracion_dias_alquiler: int | None = None
+    # Cuotas y reserva (docs/cuotas-y-reserva.md §5) -- campos aditivos,
+    # ningun cliente viejo los lee.
+    modo_pago: str = "contado"
+    pago_hoy: int | None = None
+    cuotas_activas: bool = False
+    num_cuotas: int = 3
+    valor_cuota: int = 0
+    cuota_inicial: int | None = None
+    reserva_activa: bool = False
+    monto_reserva: int = 20000
 
     class Config:
         orm_mode = True
@@ -61,6 +77,12 @@ def _shopping_car_display_query():
             GameDetail.consola_id,
             GameDetail.licencia_id,
             GameDetail.duracion_dias_alquiler,
+            GameDetail.cuotas_activas,
+            GameDetail.num_cuotas,
+            GameDetail.valor_cuota,
+            GameDetail.cuota_inicial,
+            GameDetail.reserva_activa,
+            GameDetail.monto_reserva,
         )
         .select_from(ShoppingCar)
         .join(GameDetail, ShoppingCar.product_id == GameDetail.id_game_detail)
@@ -79,6 +101,24 @@ def _effective_price(precio: int | None, precio_descuento: int | None) -> int | 
     return precio
 
 
+def _pago_hoy(
+    modo_pago: str,
+    precio_contado: int | None,
+    cuota_inicial: int | None,
+    valor_cuota: int | None,
+    monto_reserva: int | None,
+) -> int | None:
+    """"Pago de hoy" por item, misma regla que Django _calculate_cart_amount
+    (docs/cuotas-y-reserva.md §3.2): contado -> precio de contado; cuotas ->
+    inicial (cuota_inicial si esta puesta, si no vale igual que valor_cuota);
+    reserva -> monto_reserva."""
+    if modo_pago == "cuotas":
+        return cuota_inicial if cuota_inicial else (valor_cuota or 0)
+    if modo_pago == "reserva":
+        return monto_reserva
+    return precio_contado
+
+
 def _build_shopping_car_read(
     item,
     precio,
@@ -91,13 +131,21 @@ def _build_shopping_car_read(
     consola_id,
     licencia_id,
     duracion_dias_alquiler,
+    cuotas_activas,
+    num_cuotas,
+    valor_cuota,
+    cuota_inicial,
+    reserva_activa,
+    monto_reserva,
 ) -> ShoppingCarRead:
+    modo_pago = getattr(item, "modo_pago", None) or "contado"
+    precio_contado = _effective_price(precio, precio_descuento)
     return ShoppingCarRead(
         id_shopping_car=item.id_shopping_car,
         user_id=item.user_id,
         product_id=item.product_id,
         estado=item.estado,
-        product_price=_effective_price(precio, precio_descuento),
+        product_price=precio_contado,
         title=title,
         image=image,
         desc_console=desc_console,
@@ -106,6 +154,14 @@ def _build_shopping_car_read(
         consola=consola_id,
         licencia=licencia_id,
         duracion_dias_alquiler=duracion_dias_alquiler,
+        modo_pago=modo_pago,
+        pago_hoy=_pago_hoy(modo_pago, precio_contado, cuota_inicial, valor_cuota, monto_reserva),
+        cuotas_activas=bool(cuotas_activas),
+        num_cuotas=num_cuotas if num_cuotas is not None else 3,
+        valor_cuota=valor_cuota if valor_cuota is not None else 0,
+        cuota_inicial=cuota_inicial,
+        reserva_activa=bool(reserva_activa),
+        monto_reserva=monto_reserva if monto_reserva is not None else 20000,
     )
 
 
@@ -132,9 +188,11 @@ async def list_shopping_car(
         _build_shopping_car_read(
             item, precio, precio_descuento, title, image, desc_console, desc_licence,
             base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+            cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
         )
         for item, precio, precio_descuento, title, image, desc_console, desc_licence,
-        base_game_id, consola_id, licencia_id, duracion_dias_alquiler in rows
+        base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva in rows
     ]
 
 
@@ -154,6 +212,7 @@ async def get_shopping_car_item(
     (
         item, precio, precio_descuento, title, image, desc_console, desc_licence,
         base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
     ) = row
     if item.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
@@ -161,6 +220,7 @@ async def get_shopping_car_item(
     return _build_shopping_car_read(
         item, precio, precio_descuento, title, image, desc_console, desc_licence,
         base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
     )
 
 
@@ -170,7 +230,34 @@ async def create_shopping_car_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    # Reject duplicate: same GameDetail already in this user's cart.
+    modo_pago = (payload.modo_pago or "contado").strip().lower()
+    if modo_pago not in MODOS_PAGO_VALIDOS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"modo_pago invalido. Debe ser uno de: {', '.join(MODOS_PAGO_VALIDOS)}.",
+        )
+
+    gd_result = await session.execute(
+        select(GameDetail).where(GameDetail.id_game_detail == payload.product_id)
+    )
+    game_detail = gd_result.scalars().first()
+    if game_detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado.")
+
+    if modo_pago == "cuotas" and not game_detail.cuotas_activas:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Esta variante no tiene cuotas activas.",
+        )
+    if modo_pago == "reserva" and not game_detail.reserva_activa:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Esta variante no tiene reserva activa.",
+        )
+
+    # Reject duplicate: same GameDetail already in this user's cart (con
+    # cualquier modo de pago -- "una misma variante no puede estar dos veces
+    # con modos distintos", docs/cuotas-y-reserva.md §1).
     existing = await session.execute(
         select(ShoppingCar).where(
             ShoppingCar.user_id == current_user.id,
@@ -187,6 +274,7 @@ async def create_shopping_car_item(
         user_id=current_user.id,
         product_id=payload.product_id,
         estado=payload.estado if payload.estado is not None else True,
+        modo_pago=modo_pago,
     )
     session.add(item)
     await session.commit()
@@ -198,11 +286,13 @@ async def create_shopping_car_item(
     (
         _, precio, precio_descuento, title, image, desc_console, desc_licence,
         base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
     ) = result.first()
 
     return _build_shopping_car_read(
         item, precio, precio_descuento, title, image, desc_console, desc_licence,
         base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
     )
 
 
@@ -233,11 +323,13 @@ async def update_shopping_car_item(
     (
         _, precio, precio_descuento, title, image, desc_console, desc_licence,
         base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
     ) = result.first()
 
     return _build_shopping_car_read(
         item, precio, precio_descuento, title, image, desc_console, desc_licence,
         base_game_id, consola_id, licencia_id, duracion_dias_alquiler,
+        cuotas_activas, num_cuotas, valor_cuota, cuota_inicial, reserva_activa, monto_reserva,
     )
 
 
