@@ -28,6 +28,12 @@ class Product(Base):
     # Fecha de lanzamiento futura -> habilita el modo "reserva" en sus
     # variantes (docs/cuotas-y-reserva.md §3). NULL para el catalogo normal.
     fecha_lanzamiento = Column(Date, nullable=True)
+    # Publicado por el radar de ofertas (docs/radar-ofertas.md en el repo de
+    # Django): NO es de entrega inmediata, se consigue sobre pedido y se
+    # entrega en el horario de la tienda. El frontend cambia la promesa de
+    # entrega segun esta bandera; mezclar las dos promesas genera reclamos.
+    sobre_pedido = Column(Boolean, default=False)
+    radar_tienda = Column(String(8), default="")
     consoles = relationship("Consoles", secondary=products_products_consola, back_populates="products", lazy="selectin")
 
 

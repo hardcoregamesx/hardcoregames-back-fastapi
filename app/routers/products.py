@@ -1760,6 +1760,10 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
         "type_id_id": getattr(product, "type_id_id", None),
         "tipo_juego_id": getattr(product, "tipo_juego_id", None),
         "fecha_lanzamiento": product.fecha_lanzamiento.isoformat() if getattr(product, "fecha_lanzamiento", None) else None,
+        # Publicado por el radar: no es entrega inmediata. El frontend usa esto
+        # para cambiar la promesa de entrega en la ficha del producto.
+        "sobre_pedido": bool(getattr(product, "sobre_pedido", False)),
+        "radar_tienda": getattr(product, "radar_tienda", "") or "",
         "consoles": [
             {"id_console": c.id_console}
             for c in getattr(product, "consoles", []) or []
