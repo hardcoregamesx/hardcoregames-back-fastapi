@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
-from sqlalchemy import select, func, or_, cast, Integer, literal, case
+from sqlalchemy import select, func, or_, cast, Integer, literal, case, text
 from sqlalchemy.orm import selectinload
 
 from ..database import get_session
@@ -1714,6 +1714,75 @@ async def get_recommended_products(
     ]
 
     return {"data": data}
+
+
+@router.get("/locura")
+async def get_locura_offers(
+    tienda: str = Query(..., pattern="^(XBOX|PS)$"),
+    limit: int = 60,
+    session: AsyncSession = Depends(get_session),
+):
+    """Ofertas publicadas por el radar para las landings /locura-*.
+
+    Sale de las tablas del radar (las llena el repo de Django, ver
+    docs/radar-ofertas.md alli) porque son las unicas que tienen dos datos que
+    el catalogo no guarda: el precio de la tienda oficial en Colombia -- el
+    "antes" contra el que compara el cliente -- y la fecha real en que termina
+    la promocion, que es lo que mueve el contador.
+
+    Solo devuelve lo que sigue vigente: estado publicado, con producto vivo y
+    con la promocion sin vencer.
+    """
+    consulta = text(
+        """
+        SELECT j.id, j.titulo, j.imagen, j.generos, j.rating, j.rating_conteo,
+               j.precio_co, j.precio_co_oferta, j.precio_venta,
+               j.producto_publicado_id, j.region_compra,
+               p.region AS region_precio, p.descuento_pct, p.fecha_fin
+          FROM radar_juegodetectado j
+          JOIN products_products pr ON pr.id_product = j.producto_publicado_id
+          LEFT JOIN radar_precioregional p
+                 ON p.juego_id = j.id AND p.region = j.region_compra
+         WHERE j.estado = 'publicado'
+           AND j.producto_publicado_id IS NOT NULL
+           AND j.tienda = :tienda
+           AND (p.fecha_fin IS NULL OR p.fecha_fin > now())
+         ORDER BY p.fecha_fin ASC NULLS LAST, j.rating_conteo DESC
+         LIMIT :limit
+        """
+    )
+    filas = (await session.execute(consulta, {"tienda": tienda, "limit": limit})).mappings().all()
+
+    data = []
+    for f in filas:
+        # El "antes" es el precio vigente en la tienda colombiana, no el de
+        # lista: si alla tambien esta en oferta, esa es la comparacion honesta.
+        antes = f["precio_co_oferta"] or f["precio_co"]
+        if antes and f["precio_co"] and 0 < (f["precio_co_oferta"] or 0) < f["precio_co"]:
+            antes = f["precio_co_oferta"]
+        elif f["precio_co"]:
+            antes = f["precio_co"]
+
+        ahorro = None
+        if antes and f["precio_venta"] and int(antes) > 0:
+            ahorro = round((1 - (int(f["precio_venta"]) / int(antes))) * 100)
+
+        data.append({
+            "id_product": f["producto_publicado_id"],
+            "title": f["titulo"],
+            "image": f["imagen"],
+            "generos": f["generos"],
+            "rating": float(f["rating"] or 0),
+            "rating_conteo": int(f["rating_conteo"] or 0),
+            "precio_tienda_oficial": int(antes) if antes else None,
+            "price": int(f["precio_venta"]) if f["precio_venta"] else None,
+            "ahorro_pct": ahorro,
+            "fecha_fin": f["fecha_fin"].isoformat() if f["fecha_fin"] else None,
+            "tienda": tienda,
+        })
+
+    payload = {"message": "proceso exitoso", "data": data, "code": "00", "status": 200}
+    return JSONResponse(payload)
 
 
 @router.get("/{id_product}")
