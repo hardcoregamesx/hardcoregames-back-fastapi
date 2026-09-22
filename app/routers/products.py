@@ -1736,7 +1736,7 @@ async def get_locura_offers(
     consulta = text(
         """
         SELECT j.id, j.titulo, j.imagen, j.generos, j.rating, j.rating_conteo,
-               j.precio_co, j.precio_co_oferta, j.precio_venta,
+               j.precio_co, j.precio_co_oferta, j.precio_venta, j.precio_cuenta,
                j.producto_publicado_id, j.region_compra,
                p.region AS region_precio, p.descuento_pct, p.fecha_fin
           FROM radar_juegodetectado j
@@ -1763,9 +1763,16 @@ async def get_locura_offers(
         elif f["precio_co"]:
             antes = f["precio_co"]
 
+        # Un juego se puede ofrecer como codigo, como cuenta o como las dos.
+        # El precio que ve el cliente es el MAS BARATO de los que se ofrecen:
+        # mirar solo el de codigo dejaba sin precio a todo lo publicado como
+        # cuenta, y la tarjeta salia con un guion.
+        ofrecidos = [int(v) for v in (f["precio_venta"], f["precio_cuenta"]) if v]
+        precio = min(ofrecidos) if ofrecidos else None
+
         ahorro = None
-        if antes and f["precio_venta"] and int(antes) > 0:
-            ahorro = round((1 - (int(f["precio_venta"]) / int(antes))) * 100)
+        if antes and precio and int(antes) > 0:
+            ahorro = round((1 - (precio / int(antes))) * 100)
 
         data.append({
             "id_product": f["producto_publicado_id"],
@@ -1775,7 +1782,10 @@ async def get_locura_offers(
             "rating": float(f["rating"] or 0),
             "rating_conteo": int(f["rating_conteo"] or 0),
             "precio_tienda_oficial": int(antes) if antes else None,
-            "price": int(f["precio_venta"]) if f["precio_venta"] else None,
+            "price": precio,
+            # Con dos modalidades el precio mostrado es un "desde": el cliente
+            # elige cual quiere en la ficha del producto.
+            "desde": len(ofrecidos) > 1,
             "ahorro_pct": ahorro,
             "fecha_fin": f["fecha_fin"].isoformat() if f["fecha_fin"] else None,
             "tienda": tienda,
