@@ -1730,8 +1730,13 @@ async def get_locura_offers(
     "antes" contra el que compara el cliente -- y la fecha real en que termina
     la promocion, que es lo que mueve el contador.
 
-    Solo devuelve lo que sigue vigente: estado publicado, con producto vivo y
-    con la promocion sin vencer.
+    Devuelve juegos sueltos y combos en la misma lista, distinguidos por
+    `tipo` ("juego" / "combo"), porque la landing los muestra en dos pestanas
+    pero las reglas de que entra -- publicado, producto vivo, promocion sin
+    vencer y con alguna variante comprable -- son las mismas para los dos.
+
+    Un combo muere con la PRIMERA de las promociones de sus juegos: su precio
+    se armo contando ese juego barato.
     """
     consulta = text(
         """
@@ -1797,6 +1802,69 @@ async def get_locura_offers(
             "ahorro_pct": ahorro,
             "fecha_fin": f["fecha_fin"].isoformat() if f["fecha_fin"] else None,
             "tienda": tienda,
+            "tipo": "juego",
+        })
+
+    # --- combos -------------------------------------------------------------
+    # Van en la misma respuesta que los juegos, distinguidos por `tipo`: la
+    # landing los separa en dos pestanas, pero pedirlos en dos llamadas solo
+    # duplicaria el trabajo de mantener las mismas reglas (publicado, vigente,
+    # comprable) escritas dos veces.
+    consulta_combos = text(
+        """
+        SELECT c.id, c.nombre, c.imagen_propia, c.precio_venta,
+               c.producto_publicado_id, c.region,
+               count(cj.id) AS cantidad,
+               -- El "antes" de un combo es lo que costaria comprar sus juegos
+               -- uno por uno en la tienda colombiana, a su precio vigente.
+               sum(CASE WHEN j.precio_co_oferta > 0 AND j.precio_co_oferta < j.precio_co
+                        THEN j.precio_co_oferta ELSE j.precio_co END) AS suma_co,
+               -- El combo muere con la primera de sus promociones.
+               min(pr.fecha_fin) AS fecha_fin,
+               (array_agg(j.imagen ORDER BY j.rating_conteo DESC))[1] AS imagen_portada
+          FROM radar_combo c
+          JOIN products_products p ON p.id_product = c.producto_publicado_id
+          JOIN radar_combojuego cj ON cj.combo_id = c.id
+          JOIN radar_juegodetectado j ON j.id = cj.juego_id
+          LEFT JOIN radar_precioregional pr
+                 ON pr.juego_id = j.id AND pr.region = c.region
+         WHERE c.estado = 'publicado'
+           AND c.producto_publicado_id IS NOT NULL
+           AND c.tienda = :tienda
+           AND EXISTS (SELECT 1 FROM products_gamedetail gd
+                        WHERE gd.producto_id = c.producto_publicado_id
+                          AND gd.stock > 0 AND gd.precio > 0)
+         GROUP BY c.id, p.id_product
+        HAVING min(pr.fecha_fin) IS NULL OR min(pr.fecha_fin) > now()
+         ORDER BY min(pr.fecha_fin) ASC NULLS LAST
+         LIMIT :limit
+        """
+    )
+    combos = (await session.execute(consulta_combos, {"tienda": tienda, "limit": limit})).mappings().all()
+
+    for c in combos:
+        precio = int(c["precio_venta"]) if c["precio_venta"] else None
+        antes = int(c["suma_co"]) if c["suma_co"] else None
+        ahorro = None
+        if antes and precio and antes > 0:
+            ahorro = round((1 - (precio / antes)) * 100)
+        data.append({
+            "id_product": c["producto_publicado_id"],
+            "title": c["nombre"],
+            # Sin imagen propia se usa la caratula del juego mas popular; la
+            # landing la oscurece y le pone el nombre del combo encima.
+            "image": c["imagen_propia"] or c["imagen_portada"] or "",
+            "generos": "",
+            "rating": 0.0,
+            "rating_conteo": 0,
+            "precio_tienda_oficial": antes,
+            "price": precio,
+            "desde": False,
+            "ahorro_pct": ahorro,
+            "fecha_fin": c["fecha_fin"].isoformat() if c["fecha_fin"] else None,
+            "tienda": tienda,
+            "tipo": "combo",
+            "cantidad_juegos": int(c["cantidad"] or 0),
         })
 
     payload = {"message": "proceso exitoso", "data": data, "code": "00", "status": 200}
@@ -1829,6 +1897,18 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
     )
     stock_sum = res_stock.scalar() or 0
 
+    # Si este producto es un combo del radar. La ficha lo necesita para abrir
+    # la descripcion en vez de recortarla a tres lineas: en un combo la lista
+    # de juegos no es letra chica, es lo que se esta comprando. Es una consulta
+    # diminuta y solo en la ficha, no en el listado.
+    es_combo = False
+    if getattr(product, "sobre_pedido", False):
+        res_combo = await session.execute(
+            text("SELECT 1 FROM radar_combo WHERE producto_publicado_id = :pid LIMIT 1"),
+            {"pid": id_product},
+        )
+        es_combo = res_combo.first() is not None
+
     data = {
         "id_product": product.id_product,
         "title": getattr(product, "title", None),
@@ -1850,6 +1930,7 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
         # Publicado por el radar: no es entrega inmediata. El frontend usa esto
         # para cambiar la promesa de entrega en la ficha del producto.
         "sobre_pedido": bool(getattr(product, "sobre_pedido", False)),
+        "es_combo": es_combo,
         "radar_tienda": getattr(product, "radar_tienda", "") or "",
         "consoles": [
             {"id_console": c.id_console}
