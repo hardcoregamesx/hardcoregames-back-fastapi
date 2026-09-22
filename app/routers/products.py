@@ -1747,6 +1747,14 @@ async def get_locura_offers(
            AND j.producto_publicado_id IS NOT NULL
            AND j.tienda = :tienda
            AND (p.fecha_fin IS NULL OR p.fecha_fin > now())
+           -- Y que de verdad se pueda comprar. La tarjeta saca el precio de la
+           -- tabla del radar, pero la ficha lo saca de las variantes del
+           -- catalogo: si el producto se publico sin ninguna (pasaba cuando
+           -- solo habia precio de cuenta y faltaban las licencias primaria y
+           -- secundaria), la tarjeta llevaba a una ficha en $0 sin checkout.
+           AND EXISTS (SELECT 1 FROM products_gamedetail gd
+                        WHERE gd.producto_id = j.producto_publicado_id
+                          AND gd.stock > 0 AND gd.precio > 0)
          ORDER BY p.fecha_fin ASC NULLS LAST, j.rating_conteo DESC
          LIMIT :limit
         """
