@@ -386,6 +386,28 @@ async def _evaluate_coupon_business_rules(
     )
     rules = result_rules.scalars().all()
 
+    # Monto de la compra sin contar lo que el propio cupon regala. Mismo
+    # criterio que CouponRule._total_sin_regalo en Django (products/models.py),
+    # y tiene que seguir siendo el mismo: si aqui y alla el umbral se midiera
+    # distinto, el carrito diria que el cupon aplica y el checkout lo
+    # rechazaria. Un cupon que restringe su descuento a ciertas combinaciones
+    # las usa como premio, y el precio del premio no puede ayudar a alcanzar
+    # el umbral que lo desbloquea. La consulta solo se hace si alguna regla
+    # mira el monto, para no sumarla a todas las validaciones.
+    purchase_total = cart_total
+    if any((rule.rule_type or "").lower() == "min_order_amount" for rule in rules):
+        res_gift = await session.execute(
+            select(CouponGameDetail.gamedetail_id)
+            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
+        )
+        gift_ids = {row[0] for row in res_gift.all()}
+        if gift_ids:
+            purchase_total -= sum(
+                item.quantity * item.unit_price
+                for item in cart_items
+                if item.product_id in gift_ids
+            )
+
     for rule in rules:
         rt = (rule.rule_type or "").lower()
         op = (rule.operator or "").lower()
@@ -397,14 +419,14 @@ async def _evaluate_coupon_business_rules(
             amount = v.get("amount", value) if isinstance(value, dict) else value
 
             if op == "gte":
-                if cart_total >= amount:
+                if purchase_total >= amount:
                     continue
                 return False, f"El monto mínimo de la orden debe ser {amount}."
 
             if op == "between":
                 min_val = v.get("min", 0)
                 max_val = v.get("max", float("inf"))
-                if min_val <= cart_total <= max_val:
+                if min_val <= purchase_total <= max_val:
                     continue
                 return False, f"El monto de la orden debe estar entre {min_val} y {max_val}."
 
