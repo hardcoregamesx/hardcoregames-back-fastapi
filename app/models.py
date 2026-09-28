@@ -447,14 +447,26 @@ class PointTransaction(Base):
 
 
 class Roulette(Base):
-    """Una rueda configurable. Puede haber varias en el tiempo (ej. edicion
-    de temporada) pero solo una activa a la vez en la practica.
+    """Una rueda configurable. Puede haber varias no-VIP activas a la vez
+    (ej. la normal + una temática de campaña): `slug` es lo que las
+    distingue -- GET /rewards/roulette sin `?slug=` resuelve siempre a
+    slug='default', así que un cliente viejo que no manda el parámetro
+    sigue viendo exactamente la misma ruleta de siempre.
     """
 
     __tablename__ = "rewards_roulette"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
+    # Único entre TODAS las filas (normal y VIP). La normal "de siempre" usa
+    # 'default'; una ruleta temática nueva necesita su propio slug antes de
+    # poder activarse -- eso es lo que evita que dos ruletas no-VIP activas
+    # se pisen entre sí (ver GET /rewards/roulette).
+    slug = Column(String(50), nullable=False, unique=True)
+    # Texto corto opcional bajo la rueda para condiciones puntuales de una
+    # ruleta temática (ej. "premios solo para quien compró X"). None = no se
+    # muestra nada (caso de la ruleta normal).
+    notice = Column(String(280), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     cost_points = Column(Integer, nullable=False, default=0)
     max_spins_per_day = Column(Integer, nullable=True)

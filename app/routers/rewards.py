@@ -100,6 +100,9 @@ def _serialize_prize_public(p: RoulettePrize) -> dict:
     }
 
 
+DEFAULT_ROULETTE_SLUG = "default"
+
+
 def _serialize_spin_result(spin: RouletteSpin, prize: RoulettePrize, coupon: Coupon | None, points_after: int) -> dict:
     return {
         "spin_id": spin.id,
@@ -130,16 +133,40 @@ def _serialize_spin_result(spin: RouletteSpin, prize: RoulettePrize, coupon: Cou
 
 
 # ============================================================================
+# GET /rewards/roulettes — lists every active, non-VIP roulette (for the
+# roulette picker: with only one, the frontend skips straight to it)
+# ============================================================================
+
+@router.get("/roulettes")
+async def list_roulettes(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    result = await session.execute(
+        select(Roulette)
+        .where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(False))
+        .order_by(Roulette.id.asc())
+    )
+    roulettes = result.scalars().all()
+    return {
+        "data": [{"roulette_id": r.id, "slug": r.slug, "name": r.name} for r in roulettes]
+    }
+
+
+# ============================================================================
 # GET /rewards/roulette — public config for rendering the wheel
 # ============================================================================
 
 @router.get("/roulette")
 async def get_roulette_config(
+    slug: str = Query(DEFAULT_ROULETTE_SLUG),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
     result = await session.execute(
-        select(Roulette).where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(False)).order_by(Roulette.id.desc())
+        select(Roulette)
+        .where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(False), Roulette.slug == slug)
+        .order_by(Roulette.id.desc())
     )
     roulette = result.scalars().first()
     if not roulette:
@@ -169,7 +196,9 @@ async def get_roulette_config(
 
     return {
         "roulette_id": roulette.id,
+        "slug": roulette.slug,
         "name": roulette.name,
+        "notice": roulette.notice,
         "cost_points": roulette.cost_points,
         "max_spins_per_day": roulette.max_spins_per_day,
         "spins_today": spins_today,
@@ -184,6 +213,11 @@ async def get_roulette_config(
 
 class SpinRequest(BaseModel):
     idempotency_key: str = Field(..., min_length=8, max_length=100)
+    # Debe ser la misma ruleta que devolvió GET /rewards/roulette para esta
+    # pantalla -- sin esto, con 2+ ruletas no-VIP activas el giro podría
+    # cobrar/premiar contra una ruleta distinta a la que el usuario está
+    # viendo. None (clientes viejos) = ruleta "default", igual que el GET.
+    slug: str | None = None
 
 
 @router.post("/roulette/spin")
@@ -213,7 +247,13 @@ async def spin_roulette(
         return _serialize_spin_result(existing_spin, prize, coupon, int(profile.puntos or 0))
 
     roulette_result = await session.execute(
-        select(Roulette).where(Roulette.is_active.is_(True), Roulette.requires_membership.is_(False)).order_by(Roulette.id.desc())
+        select(Roulette)
+        .where(
+            Roulette.is_active.is_(True),
+            Roulette.requires_membership.is_(False),
+            Roulette.slug == (payload.slug or DEFAULT_ROULETTE_SLUG),
+        )
+        .order_by(Roulette.id.desc())
     )
     roulette = roulette_result.scalars().first()
     if not roulette:
