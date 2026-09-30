@@ -203,6 +203,10 @@ async def get_roulette_config(
         "max_spins_per_day": roulette.max_spins_per_day,
         "spins_today": spins_today,
         "user_points": int(profile.puntos or 0),
+        # El giro exige registro completo (get_current_complete_user); se
+        # expone aqui para que la ruleta avise ANTES de girar en vez de
+        # mostrar el 403 recien al intentarlo.
+        "is_guest_account": bool(profile.is_guest_account),
         "prizes": [_serialize_prize_public(p) for p in prizes],
     }
 
@@ -465,6 +469,10 @@ async def get_vip_roulette_config(
         "max_spins_per_month": roulette.max_spins_per_month,
         "spins_this_month": spins_this_month,
         "user_points": int(profile.puntos or 0),
+        # El giro exige registro completo (get_current_complete_user); se
+        # expone aqui para que la ruleta avise ANTES de girar en vez de
+        # mostrar el 403 recien al intentarlo.
+        "is_guest_account": bool(profile.is_guest_account),
         "prizes": [_serialize_prize_public(p) for p in prizes],
     }
 
