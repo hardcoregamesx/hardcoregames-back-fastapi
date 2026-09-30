@@ -1765,6 +1765,9 @@ async def get_locura_offers(
         SELECT j.id, j.titulo, j.imagen, j.generos, j.rating, j.rating_conteo,
                j.precio_co, j.precio_co_oferta, j.precio_venta, j.precio_cuenta,
                j.producto_publicado_id, j.region_compra,
+               -- Falso cuando la oferta esta sobre una ficha que ya vendemos:
+               -- ahi hay stock y la entrega es inmediata, no sobre pedido.
+               pr.sobre_pedido,
                p.region AS region_precio, p.descuento_pct, p.fecha_fin
           FROM radar_juegodetectado j
           JOIN products_products pr ON pr.id_product = j.producto_publicado_id
@@ -1825,6 +1828,7 @@ async def get_locura_offers(
             "fecha_fin": f["fecha_fin"].isoformat() if f["fecha_fin"] else None,
             "tienda": tienda,
             "tipo": "juego",
+            "sobre_pedido": bool(f["sobre_pedido"]),
         })
 
     # --- combos -------------------------------------------------------------
@@ -1886,6 +1890,7 @@ async def get_locura_offers(
             "fecha_fin": c["fecha_fin"].isoformat() if c["fecha_fin"] else None,
             "tienda": tienda,
             "tipo": "combo",
+            "sobre_pedido": True,
             "cantidad_juegos": int(c["cantidad"] or 0),
         })
 
