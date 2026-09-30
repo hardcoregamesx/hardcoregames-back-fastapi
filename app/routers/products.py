@@ -1210,29 +1210,41 @@ async def get_combination_price_by_game(id_product: int, session: AsyncSession =
             precio_descuento,
         )
 
+        entry = {
+            "pk": row.id_game_detail,
+            "consola": row.consola_id,
+            "desc_console": row.desc_console or "",
+            "licencia": row.licencia_id,
+            "desc_licence": row.desc_licence or "",
+            "stock": row.stock or 0,
+            "precio": precio,
+            "precio_descuento": precio_descuento,
+            "duracion_dias_alquiler": row.duracion_dias_alquiler,
+            # Cuotas y reserva de la variante (docs/cuotas-y-reserva.md §5).
+            "cuotas_activas": bool(row.cuotas_activas),
+            "num_cuotas": row.num_cuotas,
+            "valor_cuota": row.valor_cuota,
+            "cuota_inicial": row.cuota_inicial,
+            "reserva_activa": bool(row.reserva_activa),
+            "monto_reserva": row.monto_reserva,
+        }
+
         if key not in groups:
-            groups[key] = {
-                "pk": row.id_game_detail,
-                "consola": row.consola_id,
-                "desc_console": row.desc_console or "",
-                "licencia": row.licencia_id,
-                "desc_licence": row.desc_licence or "",
-                "stock": row.stock or 0,
-                "precio": precio,
-                "precio_descuento": precio_descuento,
-                "duracion_dias_alquiler": row.duracion_dias_alquiler,
-                # Cuotas y reserva de la variante (docs/cuotas-y-reserva.md §5).
-                # Mismos valores para todas las filas fisicas de la misma
-                # combinacion -- se toman de la primera fila del grupo.
-                "cuotas_activas": bool(row.cuotas_activas),
-                "num_cuotas": row.num_cuotas,
-                "valor_cuota": row.valor_cuota,
-                "cuota_inicial": row.cuota_inicial,
-                "reserva_activa": bool(row.reserva_activa),
-                "monto_reserva": row.monto_reserva,
-            }
+            groups[key] = entry
         else:
-            groups[key]["stock"] += row.stock or 0
+            # Cada unidad de stock es una fila propia de GameDetail y el admin
+            # solo configura cuotas/reserva en algunas. El representante del
+            # grupo (su pk es el que valida shopping_car) debe ser una fila con
+            # cuotas/reserva activas si existe alguna; si no, reponer stock las
+            # ocultaba. Se conserva el stock acumulado del grupo.
+            current = groups[key]
+            stock_total = current["stock"] + entry["stock"]
+            if (entry["cuotas_activas"], entry["reserva_activa"]) > (
+                current["cuotas_activas"],
+                current["reserva_activa"],
+            ):
+                groups[key] = entry
+            groups[key]["stock"] = stock_total
 
     data = list(groups.values())
 
