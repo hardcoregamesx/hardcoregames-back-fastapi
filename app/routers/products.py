@@ -253,6 +253,23 @@ async def _coupon_restrictions(
             license_ids.add(v["licencia"])
         if product_ids:
             specs.append((product_ids, license_ids))
+
+    # match_all_variants: each combination picked in Restricciones also stands
+    # for every combination of the same product and licencia.
+    if game_detail_ids:
+        res_variants = await session.execute(
+            select(CouponRule.id).where(
+                CouponRule.coupon_id == coupon_id,
+                CouponRule.rule_type == "match_all_variants",
+            ).limit(1)
+        )
+        if res_variants.first() is not None:
+            res_pairs = await session.execute(
+                select(GameDetail.producto_id, GameDetail.licencia_id)
+                .where(GameDetail.id_game_detail.in_(game_detail_ids))
+            )
+            for producto_id, licencia_id in res_pairs.all():
+                specs.append(({producto_id}, {licencia_id}))
     return game_detail_ids, specs
 
 
