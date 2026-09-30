@@ -220,39 +220,92 @@ async def _get_plan_aggregates_for_products(
     return out
 
 
-async def _product_matches_coupon_restrictions(
+async def _coupon_restrictions(
     session: AsyncSession,
     coupon_id: int,
-    game_detail_id: int,
-) -> bool:
-    """Check if a specific game detail (product) matches the coupon's allowed combinations.
+) -> tuple[set[int], list[tuple[set[int], set[int]]]]:
+    """Which items a coupon's discount is limited to.
 
-    Returns True if:
-    - Coupon has no game detail restrictions (empty set → applies to all), OR
-    - game_detail_id is exactly one of the coupon's linked GameDetail rows.
-
-    Returns False if:
-    - Coupon has restrictions but the game detail is not in the allowed set.
-
-    NOTE: this used to match by the (licencia_id, consola_id,
-    duracion_dias_alquiler) tuple instead of the exact game detail id, which
-    made a coupon "restricted" to one product actually apply to every other
-    product sharing the same license/console/rental-duration combo (e.g.
-    every 360-day Primaria PS5 subscription, not just the one intended).
-    Matching the exact id mirrors Django's Coupon.validate_coupon, which was
-    already correct.
+    Returns ``(game_detail_ids, product_specs)``. ``game_detail_ids`` comes
+    from the Coupon.game_details M2M (exact combinations); ``product_specs``
+    from ``discount_products`` rules, each ``(product_ids, license_ids)`` with
+    empty ``license_ids`` meaning any licencia. Both empty = unrestricted.
+    Mirrors Django's Coupon.item_matches.
     """
     res_gd = await session.execute(
         select(CouponGameDetail.gamedetail_id)
         .where(CouponGameDetail.coupon_id == coupon_id)
     )
-    coupon_game_detail_ids = {row[0] for row in res_gd.all()}
+    game_detail_ids = {row[0] for row in res_gd.all()}
+
+    res_rules = await session.execute(
+        select(CouponRule.value).where(
+            CouponRule.coupon_id == coupon_id,
+            CouponRule.rule_type == "discount_products",
+        )
+    )
+    specs: list[tuple[set[int], set[int]]] = []
+    for (value,) in res_rules.all():
+        v = value if isinstance(value, dict) else {}
+        product_ids = set(v.get("product_ids") or [])
+        license_ids = set(v.get("license_ids") or [])
+        if v.get("licencia") is not None:
+            license_ids.add(v["licencia"])
+        if product_ids:
+            specs.append((product_ids, license_ids))
+    return game_detail_ids, specs
+
+
+async def _coupon_has_restrictions(session: AsyncSession, coupon_id: int) -> bool:
+    game_detail_ids, specs = await _coupon_restrictions(session, coupon_id)
+    return bool(game_detail_ids or specs)
+
+
+async def _product_matches_coupon_restrictions(
+    session: AsyncSession,
+    coupon_id: int,
+    game_detail_id: int,
+) -> bool:
+    """Check if a specific game detail (product) matches the coupon's allowed items.
+
+    Returns True if:
+    - Coupon has no restrictions (applies to all), OR
+    - game_detail_id is exactly one of the coupon's linked GameDetail rows, OR
+    - its product (and licencia, when the rule gives ``license_ids``) is
+      covered by a ``discount_products`` rule.
+
+    Returns False if:
+    - Coupon has restrictions but the game detail is not covered by them.
+
+    NOTE: matching game_details by the (licencia_id, consola_id,
+    duracion_dias_alquiler) tuple made a coupon "restricted" to one product
+    apply to every other product sharing that combo, so game_details are
+    matched by exact id, mirroring Django's Coupon.item_matches. Matching by
+    product is opt-in through the ``discount_products`` rule.
+    """
+    coupon_game_detail_ids, specs = await _coupon_restrictions(session, coupon_id)
 
     # If coupon has no restrictions, it applies to all products
-    if not coupon_game_detail_ids:
+    if not coupon_game_detail_ids and not specs:
         return True
 
-    return game_detail_id in coupon_game_detail_ids
+    if game_detail_id in coupon_game_detail_ids:
+        return True
+
+    if specs:
+        res_gd = await session.execute(
+            select(GameDetail.producto_id, GameDetail.licencia_id)
+            .where(GameDetail.id_game_detail == game_detail_id)
+        )
+        row = res_gd.first()
+        if row is not None:
+            for product_ids, license_ids in specs:
+                if row.producto_id in product_ids and (
+                    not license_ids or row.licencia_id in license_ids
+                ):
+                    return True
+
+    return False
 
 
 async def _validate_product_coupon_match(
@@ -371,13 +424,7 @@ async def _evaluate_coupon_business_rules(
     # If coupon has restrictions, at least one item must match
     if not found_match:
         # Check if there are actually restrictions
-        res_gd = await session.execute(
-            select(CouponGameDetail.gamedetail_id)
-            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
-        )
-        coupon_game_detail_ids = {row[0] for row in res_gd.all()}
-        
-        if coupon_game_detail_ids:
+        if await _coupon_has_restrictions(session, coupon.id_coupon):
             return False, "El cupón no aplica a los productos del carrito."
 
     # 4) Evaluate rule rows attached to the coupon
@@ -396,17 +443,14 @@ async def _evaluate_coupon_business_rules(
     # mira el monto, para no sumarla a todas las validaciones.
     purchase_total = cart_total
     if any((rule.rule_type or "").lower() == "min_order_amount" for rule in rules):
-        res_gift = await session.execute(
-            select(CouponGameDetail.gamedetail_id)
-            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
-        )
-        gift_ids = {row[0] for row in res_gift.all()}
-        if gift_ids:
-            purchase_total -= sum(
-                item.quantity * item.unit_price
-                for item in cart_items
-                if item.product_id in gift_ids
-            )
+        if await _coupon_has_restrictions(session, coupon.id_coupon):
+            for item in cart_items:
+                if item.product_id is not None and await _product_matches_coupon_restrictions(
+                    session=session,
+                    coupon_id=coupon.id_coupon,
+                    game_detail_id=item.product_id,
+                ):
+                    purchase_total -= item.quantity * item.unit_price
 
     for rule in rules:
         rt = (rule.rule_type or "").lower()
@@ -2141,11 +2185,7 @@ async def validate_coupon_for_product(
             non_eligible_total += sum(i.unit_price * i.quantity for i in overflow_items)
             eligible_total = sum(i.unit_price * i.quantity for i in eligible_items)
 
-        res_gd_check = await session.execute(
-            select(CouponGameDetail.gamedetail_id)
-            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
-        )
-        coupon_has_restrictions = bool(res_gd_check.first())
+        coupon_has_restrictions = await _coupon_has_restrictions(session, coupon.id_coupon)
 
         if coupon_has_restrictions and not eligible_items:
             return ValidateCouponResponse(
@@ -2218,11 +2258,7 @@ async def validate_coupon_for_product(
         total_after = discounted_total
 
         # Check if coupon has restrictions; if so and no items matched, mark as invalid
-        res_gd_check = await session.execute(
-            select(CouponGameDetail.gamedetail_id)
-            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
-        )
-        coupon_has_restrictions = bool(res_gd_check.first())
+        coupon_has_restrictions = await _coupon_has_restrictions(session, coupon.id_coupon)
 
         if coupon_has_restrictions and not discounted_items:
             return ValidateCouponResponse(
