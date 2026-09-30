@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint, Numeric, Text
+from sqlalchemy import Column, Integer, SmallInteger, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint, Numeric, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -413,6 +413,42 @@ class ProductAlias(Base):
     alias = Column(String(200), nullable=False)
     producto_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=False)
     created_at = Column(DateTime, default=datetime.now)
+
+
+class ProductReview(Base):
+    """Reseña de un comprador sobre EL JUEGO (no sobre el servicio de la tienda).
+
+    Una fila por (producto, usuario); se puede editar. Solo escribe quien tiene
+    una venta entregada de ese producto (products_saledetail), ver
+    app/routers/reviews.py.
+
+    - `rating` siempre cuenta para el promedio, salvo `is_hidden`.
+    - `comment_hidden` oculta solo el texto (habla del servicio, lleva enlaces o
+      se ocultó a mano); la puntuacion sigue contando. `hidden_reason` dice por
+      que: 'service' | 'link' | 'manual'.
+    - `is_hidden` saca la reseña entera (promedio incluido): uso manual, para
+      spam o abuso.
+    Tabla nueva creada por Base.metadata.create_all al arrancar."""
+
+    __tablename__ = "products_productreview"
+    __table_args__ = (
+        UniqueConstraint("product_id", "user_id", name="uq_productreview_product_user"),
+        CheckConstraint("rating BETWEEN 1 AND 5", name="ck_productreview_rating"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    rating = Column(SmallInteger, nullable=False)
+    comment = Column(Text, nullable=True)
+    comment_hidden = Column(Boolean, nullable=False, default=False)
+    hidden_reason = Column(String(20), nullable=True)
+    is_hidden = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", lazy="joined")
+    product = relationship("Product", backref="reviews")
 
 
 # ============================================================================
