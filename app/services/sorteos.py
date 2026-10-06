@@ -43,6 +43,7 @@ async def compute_progress(session: AsyncSession, sorteo: Sorteo, user_id: int) 
         select(
             func.count(Transactions.id_transaction),
             func.coalesce(func.sum(Transactions.amount), 0),
+            func.coalesce(func.max(Transactions.amount), 0),
         ).where(
             Transactions.user_id == user_id,
             Transactions.status.in_(TRANSACTION_SUCCESS_STATUSES),
@@ -50,14 +51,21 @@ async def compute_progress(session: AsyncSession, sorteo: Sorteo, user_id: int) 
             Transactions.date_transaction <= sorteo.end_date,
         )
     )
-    purchases_count, amount_sum = result.one()
+    purchases_count, amount_sum, max_purchase_amount = result.one()
     purchases_count = int(purchases_count or 0)
     amount_sum = int(amount_sum or 0)
+    max_purchase_amount = int(max_purchase_amount or 0)
 
     has_count_req = sorteo.min_purchases is not None
     has_amount_req = sorteo.min_amount is not None
     count_ok = (not has_count_req) or purchases_count >= sorteo.min_purchases
-    amount_ok = (not has_amount_req) or amount_sum >= sorteo.min_amount
+    if not has_amount_req:
+        amount_ok = True
+    elif sorteo.min_amount_per_purchase:
+        # Igual que sorteos/services.py en Django: una compra sola, estrictamente mayor.
+        amount_ok = max_purchase_amount > sorteo.min_amount
+    else:
+        amount_ok = amount_sum >= sorteo.min_amount
 
     if has_count_req and has_amount_req:
         qualified = (count_ok and amount_ok) if sorteo.require_both else (count_ok or amount_ok)
