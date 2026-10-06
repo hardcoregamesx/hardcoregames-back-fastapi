@@ -11,7 +11,7 @@ por token, sin login, para invitados.
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,8 +31,11 @@ class InstallmentRead(BaseModel):
     estado: str
     fecha_pago: datetime | None = None
 
-    class Config:
-        orm_mode = True
+    # Pydantic 2 renombro orm_mode a from_attributes. Con la sintaxis vieja
+    # (class Config: orm_mode = True) la opcion se ignora y InstallmentRead.from_orm
+    # revienta con PydanticUserError: /payment-plans/ y /by-token/ daban 500 a
+    # cualquier usuario con un plan que tuviera cuotas (visto el 04/10/2026).
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlanRead(BaseModel):
@@ -57,8 +60,7 @@ class PlanRead(BaseModel):
     proxima_cuota: InstallmentRead | None = None
     puede_pagar: bool
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlanByTokenRead(PlanRead):
