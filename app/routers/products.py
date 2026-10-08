@@ -1036,6 +1036,7 @@ async def filter_products(
     game_type_id: int | None = None,
     destacado: bool | None = None,
     oferta_semana: bool | None = None,
+    has_code: bool | None = None,
     offset: int = 0,
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
@@ -1049,6 +1050,7 @@ async def filter_products(
         * game_type_id: filters by Product.tipo_juego_id
         * destacado: filters by Product.destacado (admin-controlled "Destacado" flag)
         * oferta_semana: filters by Product.oferta_semana (admin-controlled "Oferta de la Semana" flag)
+        * has_code: when true, only products with a "Código" license variant in stock (stock > 0, precio > 0)
     If any param is omitted or null, that filter is not applied.
     Supports offset/limit pagination.
     """
@@ -1083,6 +1085,22 @@ async def filter_products(
 
     if oferta_semana is not None:
         conditions.append(Product.oferta_semana.is_(oferta_semana))
+
+    if has_code:
+        # La licencia se resuelve por nombre (sin tildes) para no atar el filtro
+        # al id de products_licenses.
+        code_license_ids = select(Licenses.id_license).where(
+            func.unaccent(func.lower(Licenses.descripcion)) == "codigo"
+        )
+        conditions.append(
+            select(GameDetail.id_game_detail)
+            .where(GameDetail.producto_id == Product.id_product)
+            .where(GameDetail.licencia_id.in_(code_license_ids))
+            .where(GameDetail.stock > 0)
+            .where(GameDetail.precio > 0)
+            .correlate(Product)
+            .exists()
+        )
 
     if conditions:
         query = query.where(*conditions)
