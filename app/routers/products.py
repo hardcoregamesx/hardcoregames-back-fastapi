@@ -223,14 +223,18 @@ async def _get_plan_aggregates_for_products(
 async def _coupon_restrictions(
     session: AsyncSession,
     coupon_id: int,
-) -> tuple[set[int], list[tuple[set[int], set[int]]]]:
+) -> tuple[set[int], list[tuple[set[int], set[int], set[int] | None]]]:
     """Which items a coupon's discount is limited to.
 
     Returns ``(game_detail_ids, product_specs)``. ``game_detail_ids`` comes
     from the Coupon.game_details M2M (exact combinations); ``product_specs``
-    from ``discount_products`` rules, each ``(product_ids, license_ids)`` with
-    empty ``license_ids`` meaning any licencia. Both empty = unrestricted.
-    Mirrors Django's Coupon.item_matches.
+    from ``discount_products`` rules, each ``(product_ids, license_ids,
+    duration_days)`` with empty ``license_ids`` meaning any licencia and
+    ``duration_days`` None meaning any duration. Both product_ids/license_ids
+    empty = unrestricted. Mirrors Django's Coupon.item_matches /
+    Coupon._discount_product_specs -- duration_days matters for products like
+    GAME PASS PC, where the same producto_id+licencia_id covers several
+    rental durations (30/60/330 días) sold as separate accounts/stock.
     """
     res_gd = await session.execute(
         select(CouponGameDetail.gamedetail_id)
@@ -244,15 +248,19 @@ async def _coupon_restrictions(
             CouponRule.rule_type == "discount_products",
         )
     )
-    specs: list[tuple[set[int], set[int]]] = []
+    specs: list[tuple[set[int], set[int], set[int] | None]] = []
     for (value,) in res_rules.all():
         v = value if isinstance(value, dict) else {}
         product_ids = set(v.get("product_ids") or [])
         license_ids = set(v.get("license_ids") or [])
         if v.get("licencia") is not None:
             license_ids.add(v["licencia"])
+        duration = v.get("duration_days", v.get("duracion_dias_alquiler"))
+        duration_days = set(duration) if isinstance(duration, (list, set, tuple)) else (
+            {duration} if duration is not None else None
+        )
         if product_ids:
-            specs.append((product_ids, license_ids))
+            specs.append((product_ids, license_ids, duration_days))
 
     # match_all_variants: each combination picked in Restricciones also stands
     # for every combination of the same product and licencia.
@@ -269,7 +277,7 @@ async def _coupon_restrictions(
                 .where(GameDetail.id_game_detail.in_(game_detail_ids))
             )
             for producto_id, licencia_id in res_pairs.all():
-                specs.append(({producto_id}, {licencia_id}))
+                specs.append(({producto_id}, {licencia_id}, None))
     return game_detail_ids, specs
 
 
@@ -311,14 +319,16 @@ async def _product_matches_coupon_restrictions(
 
     if specs:
         res_gd = await session.execute(
-            select(GameDetail.producto_id, GameDetail.licencia_id)
+            select(GameDetail.producto_id, GameDetail.licencia_id, GameDetail.duracion_dias_alquiler)
             .where(GameDetail.id_game_detail == game_detail_id)
         )
         row = res_gd.first()
         if row is not None:
-            for product_ids, license_ids in specs:
+            for product_ids, license_ids, duration_days in specs:
                 if row.producto_id in product_ids and (
                     not license_ids or row.licencia_id in license_ids
+                ) and (
+                    duration_days is None or row.duracion_dias_alquiler in duration_days
                 ):
                     return True
 
@@ -458,8 +468,19 @@ async def _evaluate_coupon_business_rules(
     # las usa como premio, y el precio del premio no puede ayudar a alcanzar
     # el umbral que lo desbloquea. La consulta solo se hace si alguna regla
     # mira el monto, para no sumarla a todas las validaciones.
+    #
+    # include_restricted_items=true en el value de la regla min_order_amount
+    # desactiva esa exclusion -- mismo flag que Django (ver
+    # CouponRule.evaluate) para cupones tipo "compra $X en total, item
+    # restringido incluido, y te lo dejamos al 100%" en vez de "compra X y
+    # llevate Y gratis".
+    min_order_rules = [r for r in rules if (r.rule_type or "").lower() == "min_order_amount"]
+    include_restricted_items = any(
+        isinstance(r.value, dict) and r.value.get("include_restricted_items")
+        for r in min_order_rules
+    )
     purchase_total = cart_total
-    if any((rule.rule_type or "").lower() == "min_order_amount" for rule in rules):
+    if min_order_rules and not include_restricted_items:
         if await _coupon_has_restrictions(session, coupon.id_coupon):
             for item in cart_items:
                 if item.product_id is not None and await _product_matches_coupon_restrictions(
