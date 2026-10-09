@@ -21,7 +21,12 @@ CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 PORT = 8765
 REDIRECT = f"http://localhost:{PORT}/"
-SCOPE = "https://www.googleapis.com/auth/youtube.channel-memberships.creator"
+# readonly solo sirve para que este script pueda mostrar QUE canal quedo
+# autorizado; el sync diario usa unicamente el scope de membresias.
+SCOPE = (
+    "https://www.googleapis.com/auth/youtube.channel-memberships.creator "
+    "https://www.googleapis.com/auth/youtube.readonly"
+)
 
 if not CLIENT_ID or not CLIENT_SECRET:
     sys.exit("Define GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en el entorno.")
