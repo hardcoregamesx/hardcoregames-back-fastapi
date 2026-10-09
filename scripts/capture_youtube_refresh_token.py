@@ -68,4 +68,19 @@ with urllib.request.urlopen("https://oauth2.googleapis.com/token", data) as r:
 
 if not tok.get("refresh_token"):
     sys.exit("No vino refresh_token. Revoca el acceso en myaccount.google.com/permissions y repite.")
+req = urllib.request.Request(
+    "https://youtube.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+    headers={"Authorization": "Bearer " + tok["access_token"]},
+)
+try:
+    with urllib.request.urlopen(req) as r:
+        items = json.load(r).get("items", [])
+except Exception as e:
+    items = None
+    print("\nNo se pudo consultar el canal:", e)
+if items:
+    print("\nCANAL AUTORIZADO:", items[0]["snippet"]["title"], "(" + items[0]["id"] + ")")
+    print("Si ese NO es el canal de Hardcore Games, repite y elige el canal correcto en el selector de Google.")
+elif items is not None:
+    print("\nOJO: esta cuenta no tiene ningun canal asociado. Repite eligiendo el canal de Hardcore Games.")
 print("\nREFRESH TOKEN (guárdalo en el admin, no lo compartas):\n" + tok["refresh_token"])
