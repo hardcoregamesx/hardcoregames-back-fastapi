@@ -34,6 +34,10 @@ PRIZE_COUPON_VALIDITY_MINUTES = 30 * 24 * 60
 PRIZE_COUPON_DEFAULT_MIN_PURCHASE = 30000
 SUPPORT_WHATSAPP = "573167431812"
 
+# Ruletas especiales cuyos MANUAL_CLAIM siguen con el reclamo viejo por WhatsApp
+# (sin cupón de desbloqueo). Pendiente de revisar con el dueño.
+MANUAL_CLAIM_LEGACY_SLUGS = {"zelda-ocarina"}
+
 
 # ============================================================================
 # Helpers
@@ -432,7 +436,7 @@ async def spin_roulette(
         )
         session.add(coupon)
         await session.flush()
-    elif prize.prize_type == "MANUAL_CLAIM":
+    elif prize.prize_type == "MANUAL_CLAIM" and roulette.slug not in MANUAL_CLAIM_LEGACY_SLUGS:
         coupon = await _build_prize_coupon(session, current_user.id, prize)
     elif prize.prize_type == "POINTS":
         points_after += prize.value
@@ -696,7 +700,7 @@ async def spin_vip_roulette(
         )
         session.add(coupon)
         await session.flush()
-    elif prize.prize_type == "MANUAL_CLAIM":
+    elif prize.prize_type == "MANUAL_CLAIM" and roulette.slug not in MANUAL_CLAIM_LEGACY_SLUGS:
         coupon = await _build_prize_coupon(session, current_user.id, prize)
     elif prize.prize_type == "POINTS":
         points_after += prize.value
