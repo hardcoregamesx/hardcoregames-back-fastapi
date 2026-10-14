@@ -94,10 +94,7 @@ async def relay_purchase(event: PurchaseEvent, request: Request):
             resp = await client.post(CAPI_URL, json=payload)
             if resp.status_code == 200:
                 logger.info("[CAPI] Purchase event sent OK — event_id=%s", event_id)
-                # DEBUG TEMPORAL (quitar tras validar EMQ): devuelve la respuesta
-                # cruda de Meta para confirmar events_received/fbtrace_id sin
-                # depender de logs que no estaban propagando (ver logger arriba).
-                return {"status": "ok", "event_id": event_id, "meta_response": resp.json()}
+                return {"status": "ok", "event_id": event_id}
             else:
                 logger.warning("[CAPI] Meta returned %s: %s", resp.status_code, resp.text[:200])
                 return {"status": "error", "code": resp.status_code}
