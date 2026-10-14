@@ -34,6 +34,7 @@ class PurchaseEvent(BaseModel):
     email: Optional[str] = None
     amount: Optional[float] = None
     currency: Optional[str] = "COP"
+    test_event_code: Optional[str] = None  # Meta Events Manager > Test Events — solo para validar, nunca en prod real
 
 
 def _sha256(value: str) -> str:
@@ -85,6 +86,8 @@ async def relay_purchase(event: PurchaseEvent, request: Request):
         ],
         "access_token": META_ACCESS_TOKEN,
     }
+    if event.test_event_code:
+        payload["test_event_code"] = event.test_event_code
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
