@@ -1,9 +1,10 @@
 import random
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +13,9 @@ from ..models import (
     User,
     UserCustomized,
     Coupon,
+    CouponRule,
     PointTransaction,
+    PrizeClaim,
     Roulette,
     RoulettePrize,
     RouletteSpin,
@@ -23,6 +26,13 @@ from ..util.util_auth import get_current_user, get_current_complete_user
 router = APIRouter(prefix="/rewards", tags=["rewards"])
 
 DEFAULT_COUPON_VALIDITY_MINUTES = 60
+
+# Premios MANUAL_CLAIM (juegos, Game Pass...): el giro entrega un cupón SIN
+# descuento que solo "desbloquea" el premio al usarse en una compra. Dura un
+# mes y exige una compra mínima (editable por premio en RoulettePrize.min_purchase).
+PRIZE_COUPON_VALIDITY_MINUTES = 30 * 24 * 60
+PRIZE_COUPON_DEFAULT_MIN_PURCHASE = 30000
+SUPPORT_WHATSAPP = "573167431812"
 
 
 # ============================================================================
@@ -69,6 +79,74 @@ async def _record_points(
     )
 
 
+def _prize_min_purchase(prize: RoulettePrize) -> int:
+    return prize.min_purchase or PRIZE_COUPON_DEFAULT_MIN_PURCHASE
+
+
+async def _exclude_open_claim_prizes(
+    session: AsyncSession, user_id: int, prizes: list[RoulettePrize]
+) -> list[RoulettePrize]:
+    """Un solo cupón de premio abierto por premio: si el usuario ya tiene el
+    cupón de "Juego PlayStation" sin usar y vigente, ese premio sale del sorteo
+    hasta que lo use o venza (evita acumular varios y gastarlos en una compra)."""
+    manual_ids = [p.id for p in prizes if p.prize_type == "MANUAL_CLAIM"]
+    if not manual_ids:
+        return prizes
+    result = await session.execute(
+        select(PrizeClaim.prize_id)
+        .join(Coupon, Coupon.id_coupon == PrizeClaim.coupon_id)
+        .where(
+            PrizeClaim.user_id == user_id,
+            PrizeClaim.status == "LOCKED",
+            PrizeClaim.prize_id.in_(manual_ids),
+            Coupon.expiration_date > datetime.now(timezone.utc),
+        )
+    )
+    blocked = set(result.scalars().all())
+    return [p for p in prizes if p.id not in blocked]
+
+
+async def _build_prize_coupon(session: AsyncSession, user_id: int, prize: RoulettePrize) -> Coupon:
+    """Cupón de un premio MANUAL_CLAIM: sin descuento, de un solo uso y con
+    compra mínima. Las reglas son las mismas `products_couponrule` que ya
+    validan el checkout de Django y de FastAPI, así que no hay lógica nueva
+    de validación."""
+    validity = prize.coupon_validity_minutes or PRIZE_COUPON_VALIDITY_MINUTES
+    coupon = Coupon(
+        name_coupon=f"PREM-{user_id}-{int(datetime.now(timezone.utc).timestamp())}",
+        expiration_date=datetime.now(timezone.utc) + timedelta(minutes=validity),
+        is_valid=True,
+        user_id=user_id,
+        discount_type="PERCENTAGE",
+        fixed_amount=0,
+        percentage_off=0,
+        source="ROULETTE",
+    )
+    session.add(coupon)
+    await session.flush()
+    session.add_all([
+        CouponRule(
+            coupon_id=coupon.id_coupon,
+            rule_type="min_order_amount",
+            operator="gte",
+            value={"amount": _prize_min_purchase(prize), "include_restricted_items": True},
+        ),
+        CouponRule(
+            coupon_id=coupon.id_coupon,
+            rule_type="usage_limit_per_user",
+            operator="lte",
+            value={"limit": 1},
+        ),
+        CouponRule(
+            coupon_id=coupon.id_coupon,
+            rule_type="usage_limit_total",
+            operator="lte",
+            value={"limit": 1},
+        ),
+    ])
+    return coupon
+
+
 def _pick_weighted_prize(prizes: list[RoulettePrize]) -> RoulettePrize:
     eligible = [p for p in prizes if p.stock is None or p.stock > 0]
     if not eligible:
@@ -104,6 +182,20 @@ DEFAULT_ROULETTE_SLUG = "default"
 
 
 def _serialize_spin_result(spin: RouletteSpin, prize: RoulettePrize, coupon: Coupon | None, points_after: int) -> dict:
+    is_prize_coupon = prize.prize_type == "MANUAL_CLAIM" and coupon is not None
+    if is_prize_coupon:
+        min_purchase = f"{_prize_min_purchase(prize):,}".replace(",", ".")
+        claim_message = (
+            f"¡Ganaste {prize.name}! Aplica el cupón {coupon.name_coupon} en una compra "
+            f"de mínimo ${min_purchase} (no da descuento, desbloquea tu premio) antes del "
+            f"{coupon.expiration_date.strftime('%d/%m/%Y')}. Cuando tu compra se apruebe, "
+            "reclama tu premio desde Mis cupones o la pantalla de tu pedido."
+        )
+    elif prize.prize_type == "MANUAL_CLAIM":
+        # Giros anteriores a los premios con cupón: se reclaman por WhatsApp.
+        claim_message = f"Escríbenos por WhatsApp con tu código de giro #{spin.id} para reclamar tu premio."
+    else:
+        claim_message = None
     return {
         "spin_id": spin.id,
         "prize": {
@@ -119,15 +211,13 @@ def _serialize_spin_result(spin: RouletteSpin, prize: RoulettePrize, coupon: Cou
                 "fixed_amount": coupon.fixed_amount,
                 "percentage_off": coupon.percentage_off,
                 "expiration_date": coupon.expiration_date.isoformat(),
+                "unlocks_prize": is_prize_coupon,
+                "min_purchase": _prize_min_purchase(prize) if is_prize_coupon else None,
             }
             if coupon
             else None
         ),
-        "claim_message": (
-            f"Escríbenos por WhatsApp con tu código de giro #{spin.id} para reclamar tu premio."
-            if prize.prize_type == "MANUAL_CLAIM"
-            else None
-        ),
+        "claim_message": claim_message,
         "points_after": points_after,
     }
 
@@ -308,6 +398,7 @@ async def spin_roulette(
         p for p in prizes
         if p.max_per_user is None or user_prize_counts.get(p.id, 0) < p.max_per_user
     ]
+    eligible_prizes = await _exclude_open_claim_prizes(session, current_user.id, eligible_prizes)
     prize = _pick_weighted_prize(eligible_prizes)
 
     points_before = int(profile.puntos or 0)
@@ -341,6 +432,8 @@ async def spin_roulette(
         )
         session.add(coupon)
         await session.flush()
+    elif prize.prize_type == "MANUAL_CLAIM":
+        coupon = await _build_prize_coupon(session, current_user.id, prize)
     elif prize.prize_type == "POINTS":
         points_after += prize.value
         profile.puntos = points_after
@@ -367,6 +460,18 @@ async def spin_roulette(
         idempotency_key=payload.idempotency_key,
     )
     session.add(spin)
+    if prize.prize_type == "MANUAL_CLAIM" and coupon is not None:
+        await session.flush()
+        session.add(
+            PrizeClaim(
+                user_id=current_user.id,
+                spin_id=spin.id,
+                prize_id=prize.id,
+                prize_name=prize.name,
+                coupon_id=coupon.id_coupon,
+                status="LOCKED",
+            )
+        )
 
     try:
         await session.commit()
@@ -557,6 +662,7 @@ async def spin_vip_roulette(
         p for p in prizes
         if p.max_per_user is None or user_prize_counts.get(p.id, 0) < p.max_per_user
     ]
+    eligible_prizes = await _exclude_open_claim_prizes(session, current_user.id, eligible_prizes)
     prize = _pick_weighted_prize(eligible_prizes)
 
     points_before = int(profile.puntos or 0)
@@ -590,6 +696,8 @@ async def spin_vip_roulette(
         )
         session.add(coupon)
         await session.flush()
+    elif prize.prize_type == "MANUAL_CLAIM":
+        coupon = await _build_prize_coupon(session, current_user.id, prize)
     elif prize.prize_type == "POINTS":
         points_after += prize.value
         profile.puntos = points_after
@@ -616,6 +724,18 @@ async def spin_vip_roulette(
         idempotency_key=payload.idempotency_key,
     )
     session.add(spin)
+    if prize.prize_type == "MANUAL_CLAIM" and coupon is not None:
+        await session.flush()
+        session.add(
+            PrizeClaim(
+                user_id=current_user.id,
+                spin_id=spin.id,
+                prize_id=prize.id,
+                prize_name=prize.name,
+                coupon_id=coupon.id_coupon,
+                status="LOCKED",
+            )
+        )
 
     try:
         await session.commit()
@@ -685,15 +805,20 @@ async def get_my_coupons(
 ):
     now = datetime.now(timezone.utc)
     result = await session.execute(
-        select(Coupon)
+        select(Coupon, PrizeClaim.prize_name)
+        .outerjoin(PrizeClaim, PrizeClaim.coupon_id == Coupon.id_coupon)
         .where(
             Coupon.user_id == current_user.id,
             Coupon.is_valid.is_(True),
             Coupon.expiration_date > now,
+            # Un cupón de premio ya usado deja de ser "activo": su estado vive
+            # en /rewards/prizes/mine.
+            or_(PrizeClaim.id.is_(None), PrizeClaim.status == "LOCKED"),
         )
         .order_by(Coupon.expiration_date.asc())
     )
-    coupons = result.scalars().all()
+    rows = result.all()
+    min_purchases = await _prize_coupon_min_purchases(session, [c.id_coupon for c, prize_name in rows if prize_name])
     return {
         "data": [
             {
@@ -703,7 +828,110 @@ async def get_my_coupons(
                 "percentage_off": c.percentage_off,
                 "source": c.source,
                 "expiration_date": c.expiration_date.isoformat(),
+                "unlocks_prize": prize_name,
+                "min_purchase": min_purchases.get(c.id_coupon),
             }
-            for c in coupons
+            for c, prize_name in rows
         ]
     }
+
+
+async def _prize_coupon_min_purchases(session: AsyncSession, coupon_ids: list[int]) -> dict[int, int]:
+    if not coupon_ids:
+        return {}
+    result = await session.execute(
+        select(CouponRule.coupon_id, CouponRule.value).where(
+            CouponRule.coupon_id.in_(coupon_ids), CouponRule.rule_type == "min_order_amount"
+        )
+    )
+    return {
+        coupon_id: int(value.get("amount", 0))
+        for coupon_id, value in result.all()
+        if isinstance(value, dict)
+    }
+
+
+# ============================================================================
+# Premios por reclamar (MANUAL_CLAIM -> cupón -> compra -> reclamo)
+# ============================================================================
+
+def _claim_whatsapp_url(claim: PrizeClaim) -> str:
+    text = (
+        f"Hola, quiero reclamar mi premio de la ruleta: {claim.prize_name}. "
+        f"Giro #{claim.spin_id}, premio #{claim.id}"
+        + (f", compra (productos {claim.order_id})" if claim.order_id else "")
+        + "."
+    )
+    return f"https://wa.me/{SUPPORT_WHATSAPP}?text={quote(text)}"
+
+
+def _serialize_claim(claim: PrizeClaim, coupon: Coupon | None, min_purchase: int | None) -> dict:
+    now = datetime.now(timezone.utc)
+    status_value = claim.status
+    # LOCKED con cupón vencido (o ya purgado por purge_expired_coupons) = perdido.
+    expired = claim.status == "LOCKED" and (coupon is None or coupon.expiration_date <= now)
+    return {
+        "id": claim.id,
+        "prize_name": claim.prize_name,
+        "status": "EXPIRED" if expired else status_value,
+        "coupon_code": coupon.name_coupon if coupon else None,
+        "coupon_expiration": coupon.expiration_date.isoformat() if coupon else None,
+        "min_purchase": min_purchase,
+        "order_id": claim.order_id,
+        "unlocked_at": claim.unlocked_at.isoformat() if claim.unlocked_at else None,
+        "requested_at": claim.requested_at.isoformat() if claim.requested_at else None,
+        "delivered_at": claim.delivered_at.isoformat() if claim.delivered_at else None,
+        "whatsapp_url": _claim_whatsapp_url(claim) if claim.status in ("UNLOCKED", "REQUESTED") else None,
+    }
+
+
+@router.get("/prizes/mine")
+async def get_my_prizes(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    result = await session.execute(
+        select(PrizeClaim, Coupon)
+        .outerjoin(Coupon, Coupon.id_coupon == PrizeClaim.coupon_id)
+        .where(PrizeClaim.user_id == current_user.id, PrizeClaim.status != "CANCELLED")
+        .order_by(PrizeClaim.created_at.desc())
+    )
+    rows = result.all()
+    min_purchases = await _prize_coupon_min_purchases(session, [c.id_coupon for _, c in rows if c])
+    return {
+        "data": [
+            _serialize_claim(claim, coupon, min_purchases.get(coupon.id_coupon) if coupon else None)
+            for claim, coupon in rows
+        ]
+    }
+
+
+@router.post("/prizes/{claim_id}/claim")
+async def claim_prize(
+    claim_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """El cliente pulsa "Reclamar": solo con el premio ya desbloqueado (pedido
+    con el cupón aprobado). Marca REQUESTED y devuelve el enlace de WhatsApp;
+    la entrega la hace soporte y la marca DELIVERED desde el admin. Idempotente."""
+    result = await session.execute(
+        select(PrizeClaim).where(PrizeClaim.id == claim_id, PrizeClaim.user_id == current_user.id).with_for_update()
+    )
+    claim = result.scalars().first()
+    if not claim or claim.status == "CANCELLED":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Premio no encontrado.")
+    if claim.status == "LOCKED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Todavía no puedes reclamarlo: usa tu cupón en una compra y espera a que se apruebe.",
+        )
+    if claim.status == "UNLOCKED":
+        claim.status = "REQUESTED"
+        claim.requested_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(claim)
+    coupon = None
+    if claim.coupon_id:
+        coupon = (await session.execute(select(Coupon).where(Coupon.id_coupon == claim.coupon_id))).scalars().first()
+    return _serialize_claim(claim, coupon, None)

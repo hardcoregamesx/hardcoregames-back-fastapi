@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, SmallInteger, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint, Numeric, Text
+from sqlalchemy import Index, Column, Integer, SmallInteger, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger, CheckConstraint, UniqueConstraint, Numeric, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -566,6 +566,47 @@ class RouletteSpin(Base):
     roulette = relationship("Roulette", backref="spins")
     prize = relationship("RoulettePrize", backref="spins")
     coupon = relationship("Coupon", backref="roulette_spin")
+
+
+class PrizeClaim(Base):
+    """Premio MANUAL_CLAIM (juego, Game Pass...) que el cliente reclama despues
+    de usar su cupón de compra.
+
+    LOCKED (cupón sin usar) -> UNLOCKED (pedido con el cupón aprobado; lo pasa
+    Django en apply_coupon_points) -> REQUESTED (el cliente pulsó "Reclamar")
+    -> DELIVERED (soporte entregó, desde el admin de Django). CANCELLED lo pone
+    soporte a mano (p.ej. reembolso del pedido). Tabla nueva creada por
+    Base.metadata.create_all al arrancar; Django la espeja con managed = False.
+    coupon_id usa ON DELETE SET NULL: purge_expired_coupons borra cupones
+    vencidos sin usar y el reclamo (LOCKED sin cupón = vencido) debe sobrevivir.
+    """
+
+    __tablename__ = "rewards_prizeclaim"
+    __table_args__ = (
+        UniqueConstraint("spin_id", name="rewards_prizeclaim_spin_id_key"),
+        Index("rewards_prizeclaim_user_status_idx", "user_id", "status"),
+        Index("rewards_prizeclaim_coupon_idx", "coupon_id"),
+        CheckConstraint(
+            "status IN ('LOCKED','UNLOCKED','REQUESTED','DELIVERED','CANCELLED')",
+            name="rewards_prizeclaim_status_check",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    spin_id = Column(BigInteger, ForeignKey("rewards_roulettespin.id"), nullable=False)
+    prize_id = Column(Integer, ForeignKey("rewards_rouletteprize.id"), nullable=False)
+    prize_name = Column(String(100), nullable=False)
+    coupon_id = Column(Integer, ForeignKey("coupons_coupon.id_coupon", ondelete="SET NULL"), nullable=True)
+    status = Column(String(12), nullable=False, default="LOCKED")
+    order_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    unlocked_at = Column(DateTime(timezone=True), nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    admin_notes = Column(Text, nullable=False, default="")
+
+    coupon = relationship("Coupon", backref="prize_claim")
 
 
 # ============================================================================
