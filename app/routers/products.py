@@ -262,22 +262,16 @@ async def _coupon_restrictions(
         if product_ids:
             specs.append((product_ids, license_ids, duration_days))
 
-    # match_all_variants: each combination picked in Restricciones also stands
-    # for every combination of the same product and licencia.
+    # Each combination picked in Restricciones also stands for every
+    # combination of the same product and licencia (always on; the old
+    # match_all_variants rule is now redundant).
     if game_detail_ids:
-        res_variants = await session.execute(
-            select(CouponRule.id).where(
-                CouponRule.coupon_id == coupon_id,
-                CouponRule.rule_type == "match_all_variants",
-            ).limit(1)
+        res_pairs = await session.execute(
+            select(GameDetail.producto_id, GameDetail.licencia_id)
+            .where(GameDetail.id_game_detail.in_(game_detail_ids))
         )
-        if res_variants.first() is not None:
-            res_pairs = await session.execute(
-                select(GameDetail.producto_id, GameDetail.licencia_id)
-                .where(GameDetail.id_game_detail.in_(game_detail_ids))
-            )
-            for producto_id, licencia_id in res_pairs.all():
-                specs.append(({producto_id}, {licencia_id}, None))
+        for producto_id, licencia_id in res_pairs.all():
+            specs.append(({producto_id}, {licencia_id}, None))
     return game_detail_ids, specs
 
 
