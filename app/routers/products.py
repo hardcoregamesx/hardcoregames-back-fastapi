@@ -1031,6 +1031,9 @@ async def filter_products(
     destacado: bool | None = None,
     oferta_semana: bool | None = None,
     has_code: bool | None = None,
+    sort: str | None = None,
+    min_price: int | None = None,
+    max_price: int | None = None,
     offset: int = 0,
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
@@ -1045,12 +1048,39 @@ async def filter_products(
         * destacado: filters by Product.destacado (admin-controlled "Destacado" flag)
         * oferta_semana: filters by Product.oferta_semana (admin-controlled "Oferta de la Semana" flag)
         * has_code: when true, only products with a "Código" license variant in stock (stock > 0, precio > 0)
+        * sort: popularity (default, most sold), price-low, price-high, newest, discount.
+          Applied in SQL over the whole catalog, before offset/limit.
+        * min_price / max_price: bounds on the effective (discounted) minimum price.
     If any param is omitted or null, that filter is not applied.
     Supports offset/limit pagination.
     """
 
     query = select(Product).options(selectinload(Product.consoles))
     conditions = []
+
+    # Precio efectivo por variante: la oferta cuenta solo si es > 0 y < precio
+    # de lista (misma regla que _effective_price). El del producto es el menor
+    # entre sus variantes con stock.
+    effective_variant_price = case(
+        (
+            (GameDetail.precio_descuento > 0) & (GameDetail.precio_descuento < GameDetail.precio),
+            GameDetail.precio_descuento,
+        ),
+        else_=GameDetail.precio,
+    )
+    product_price = (
+        select(func.min(effective_variant_price))
+        .where(GameDetail.producto_id == Product.id_product)
+        .where(GameDetail.stock > 0)
+        .where(GameDetail.precio > 0)
+        .correlate(Product)
+        .scalar_subquery()
+    )
+
+    if min_price is not None:
+        conditions.append(product_price >= min_price)
+    if max_price is not None:
+        conditions.append(product_price <= max_price)
 
     if q:
         q_norm = _normalize_search_text(q)
@@ -1099,7 +1129,37 @@ async def filter_products(
     if conditions:
         query = query.where(*conditions)
 
-    query = query.order_by(case((select(func.count(GameDetail.id_game_detail)).where(GameDetail.producto_id == Product.id_product).where(GameDetail.stock > 0).where(GameDetail.precio > 0).correlate(Product).scalar_subquery() == 0, 1), else_=0), Product.id_product)
+    out_of_stock_last = case((select(func.count(GameDetail.id_game_detail)).where(GameDetail.producto_id == Product.id_product).where(GameDetail.stock > 0).where(GameDetail.precio > 0).correlate(Product).scalar_subquery() == 0, 1), else_=0)
+
+    if sort in ("price-low", "price-high"):
+        price_order = product_price.asc() if sort == "price-low" else product_price.desc()
+        order = [out_of_stock_last, price_order.nulls_last(), Product.id_product]
+    elif sort == "newest":
+        order = [out_of_stock_last, Product.id_product.desc()]
+    elif sort == "discount":
+        best_discount = (
+            select(func.max((GameDetail.precio - GameDetail.precio_descuento) * 100.0 / GameDetail.precio))
+            .where(GameDetail.producto_id == Product.id_product)
+            .where(GameDetail.stock > 0)
+            .where(GameDetail.precio > 0)
+            .where(GameDetail.precio_descuento > 0)
+            .where(GameDetail.precio_descuento < GameDetail.precio)
+            .correlate(Product)
+            .scalar_subquery()
+        )
+        order = [out_of_stock_last, best_discount.desc().nulls_last(), Product.id_product]
+    else:
+        # popularity (default): mas vendidos primero. Antes era solo id_product,
+        # por eso "Mas popular" devolvia siempre los mismos juegos.
+        sales_count = (
+            select(func.count(SaleDetail.id_sale_detail))
+            .where(SaleDetail.producto_id == Product.id_product)
+            .correlate(Product)
+            .scalar_subquery()
+        )
+        order = [out_of_stock_last, sales_count.desc(), Product.id_product]
+
+    query = query.order_by(*order)
     if offset:
         query = query.offset(offset)
     query = query.limit(limit)
