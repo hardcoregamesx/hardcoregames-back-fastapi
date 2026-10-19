@@ -66,6 +66,17 @@ async def relay_purchase(event: PurchaseEvent, request: Request):
     # Remove None values
     user_data = {k: v for k, v in user_data.items() if v}
 
+    # logger.info no se ve en docker logs — el logger raiz de esta app corre
+    # en WARNING por defecto (no hay logging.basicConfig en main.py) y no hay
+    # handler propio acá, así que cualquier .info() se descarta en silencio.
+    # Usamos warning() a propósito, no porque sea una condición de alerta,
+    # para que esta línea sí se pueda auditar con `docker logs hc-fastapi`
+    # sin exponer email/fbc/fbp crudos — solo si llegaron o no.
+    logger.warning(
+        "[CAPI] purchase event_id=%s order_id=%s fbc_present=%s fbp_present=%s email_present=%s",
+        event_id, event.order_id, bool(event.fbc), bool(event.fbp), bool(event.email),
+    )
+
     custom_data = {"currency": event.currency or "COP"}
     if event.amount is not None:
         custom_data["value"] = event.amount
