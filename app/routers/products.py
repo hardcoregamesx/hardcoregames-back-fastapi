@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
-from sqlalchemy import select, func, or_, cast, Integer, literal, case, text
+from sqlalchemy import select, func, or_, and_, cast, Integer, literal, case, text
 from sqlalchemy.orm import selectinload
 
 from ..database import get_session
@@ -1228,14 +1228,30 @@ async def get_products_from_date(
         )
 
     today = datetime.utcnow().date()
+    # Lanzamientos = altas recientes SUBIDAS A MANO + juegos con fecha de
+    # estreno futura (aunque se hayan dado de alta hace mas de 3 meses, como
+    # GTA VI). Los productos del radar (sobre_pedido) NO son lanzamientos: son
+    # juegos viejos que se consiguen bajo pedido y tienen su propia seccion
+    # (/products/sobre-pedido). Su fecha_lanzamiento es solo un requisito
+    # tecnico del modo reserva, no una fecha de estreno.
+    es_proximo = and_(Product.fecha_lanzamiento.is_not(None), Product.fecha_lanzamiento > today)
     query = (
         select(Product)
         .options(selectinload(Product.consoles))
         .where(
-            Product.date_register >= resolved_date,
-            Product.date_register <= today,
+            or_(
+                and_(Product.date_register >= resolved_date, Product.date_register <= today),
+                es_proximo,
+            ),
+            or_(Product.sobre_pedido.is_(False), Product.sobre_pedido.is_(None)),
         )
-        .order_by(Product.date_register.desc(), Product.id_product)
+        # Primero los proximos (el que sale antes arriba), luego los recientes.
+        .order_by(
+            case((es_proximo, 0), else_=1),
+            case((es_proximo, Product.fecha_lanzamiento), else_=None).asc().nulls_last(),
+            Product.date_register.desc(),
+            Product.id_product,
+        )
     )
 
     if offset:
@@ -1277,6 +1293,62 @@ async def get_products_from_date(
     ]
 
     return {"data": data}
+
+
+
+
+@router.get("/sobre-pedido")
+async def get_sobre_pedido_products(
+    offset: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+):
+    """Catalogo sobre pedido (productos del radar): seccion aparte del stock
+    normal y de Lanzamientos. Solo los que hoy se pueden comprar (con precio)."""
+    query = (
+        select(Product)
+        .options(selectinload(Product.consoles))
+        .where(Product.sobre_pedido.is_(True))
+        .order_by(Product.date_register.desc(), Product.id_product)
+    )
+    result = await session.execute(query)
+    products = result.scalars().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+    plan_aggregates = await _get_plan_aggregates_for_products(session, product_ids)
+    products = [p for p in products if min_prices.get(p.id_product)][offset : offset + limit]
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "oferta_semana": p.oferta_semana,
+            "type_id_id": p.type_id_id,
+            "tipo_juego_id": p.tipo_juego_id,
+            "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
+            "fecha_lanzamiento": p.fecha_lanzamiento.isoformat() if getattr(p, "fecha_lanzamiento", None) else None,
+            **plan_aggregates.get(p.id_product, {"cuotas_desde": None, "cuotas_num": None, "reserva_monto": None}),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+
+    return {"data": data}
+
+
 
 
 @router.get("/combination-price/{id_product}")
