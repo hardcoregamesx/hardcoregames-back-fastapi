@@ -20,6 +20,7 @@ from .routers import physical_products
 from .routers import membership
 from .routers import payment_plans
 from .routers import reviews
+from .routers import referrals
 
 app = FastAPI(title="Reactive FastAPI Microservice")
 
@@ -80,3 +81,4 @@ app.include_router(membership.router)
 app.include_router(tracking.router)
 app.include_router(payment_plans.router)
 app.include_router(reviews.router)
+app.include_router(referrals.router)
