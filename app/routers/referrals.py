@@ -64,7 +64,8 @@ async def my_referral(
         await session.execute(
             text(
                 "SELECT COALESCE(SUM(cashback) FILTER (WHERE status = 'credited'), 0) AS earned, "
-                "COUNT(*) FILTER (WHERE status = 'credited') AS uses "
+                "COUNT(*) FILTER (WHERE status IN ('pending', 'credited')) AS uses, "
+                "COALESCE(SUM(cashback) FILTER (WHERE status = 'pending'), 0) AS pending "
                 "FROM referral_reward WHERE referrer_id = :u"
             ),
             {"u": current_user.id},
@@ -73,7 +74,7 @@ async def my_referral(
     history = (
         await session.execute(
             text(
-                "SELECT source_type, base_amount, cashback, status, created_at FROM referral_reward "
+                "SELECT source_type, base_amount, cashback, status, created_at, available_at FROM referral_reward "
                 "WHERE referrer_id = :u ORDER BY created_at DESC LIMIT 50"
             ),
             {"u": current_user.id},
@@ -88,6 +89,8 @@ async def my_referral(
         "code": row[0] if row else None,
         "total_earned": int(stats[0]),
         "uses": int(stats[1]),
+        "pending_amount": int(stats[2]),
+        "hold_days": 3,
         "balance_exchange": int(balance or 0),
         "cashback_percent": 1,
         "history": [
@@ -97,6 +100,7 @@ async def my_referral(
                 "cashback": h[2],
                 "status": h[3],
                 "created_at": h[4].isoformat() if h[4] else None,
+                "available_at": h[5].isoformat() if h[5] else None,
             }
             for h in history
         ],
