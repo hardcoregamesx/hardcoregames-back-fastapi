@@ -8,6 +8,7 @@ el frontend necesita para pintar "Pagos pendientes" y la pantalla de un plan
 por token, sin login, para invitados.
 """
 
+import re
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -83,14 +84,33 @@ def _mask_email(email: str | None) -> str | None:
     return f"{visible}***@{domain}"
 
 
-def _proxima_cuota(installments: list[PaymentInstallment]) -> PaymentInstallment | None:
+_GTA_VI_RE = re.compile(r"grand theft auto vi(?![a-z])|\bgta ?vi(?![a-z])", re.IGNORECASE)
+
+
+def _saldo_reserva_pagable(plan: PaymentPlan) -> bool:
+    """Reservas de GTA VI en espera de stock: el cliente puede pagar el saldo
+    por adelantado (el saldo no tiene fecha hasta asignar cuenta). La entrega
+    sigue siendo manual desde el admin cuando haya cuenta. Para otras reservas
+    (p. ej. fisicos con precio estimado) el saldo se cobra solo tras asignar."""
+    return (
+        plan.tipo == "reserva"
+        and plan.estado == "esperando_stock"
+        and bool(_GTA_VI_RE.search(plan.titulo_snapshot or ""))
+    )
+
+
+def _proxima_cuota(installments: list[PaymentInstallment], plan: PaymentPlan | None = None) -> PaymentInstallment | None:
     """La cuota pendiente con fecha de vencimiento mas antigua. Una cuota
     pendiente sin fecha (el saldo de una reserva antes de asignar cuenta,
-    §3.2) no cuenta: no hay "proxima fecha" que mostrar todavia."""
+    §3.2) no cuenta: no hay "proxima fecha" que mostrar todavia -- salvo en
+    las reservas de GTA VI, que pueden pagar el saldo por adelantado."""
     pendientes = [
         c for c in installments
         if c.estado == "pendiente" and c.fecha_vencimiento is not None
     ]
+    if not pendientes and plan is not None and _saldo_reserva_pagable(plan):
+        sin_fecha = [c for c in installments if c.estado == "pendiente"]
+        return min(sin_fecha, key=lambda c: c.numero) if sin_fecha else None
     if not pendientes:
         return None
     return min(pendientes, key=lambda c: c.fecha_vencimiento)
@@ -101,12 +121,15 @@ def _puede_pagar(plan: PaymentPlan, installments: list[PaymentInstallment]) -> b
         c.estado == "pendiente" and c.fecha_vencimiento is not None for c in installments
     )
     reserva_asignada = plan.tipo == "reserva" and plan.estado == "asignado"
-    return hay_pendiente_con_fecha or reserva_asignada
+    saldo_adelantado = _saldo_reserva_pagable(plan) and any(
+        c.estado == "pendiente" for c in installments
+    )
+    return hay_pendiente_con_fecha or reserva_asignada or saldo_adelantado
 
 
 def _build_plan_read(plan, producto_titulo, producto_imagen, fecha_lanzamiento, installments):
     cuotas = sorted(installments, key=lambda c: c.numero)
-    proxima = _proxima_cuota(installments)
+    proxima = _proxima_cuota(installments, plan)
     return PlanRead(
         id=plan.id,
         tipo=plan.tipo,
