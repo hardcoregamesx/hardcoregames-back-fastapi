@@ -41,6 +41,10 @@ TRANSFER_SURCHARGE_MIN_PRICE = 600_000
 # para todos los productos (sin umbral de precio mínimo).
 SISTECREDITO_MULTIPLIER = 1.20
 
+# Tarjeta de crédito: recargo sobre el valor de efectivo para todos los
+# productos. El porcentaje NO se muestra al cliente, solo el valor final.
+TARJETA_MULTIPLIER = 1.07
+
 _CACHE_TTL_SECONDS = 300
 _cache: dict = {"data": None, "fetched_at": 0.0}
 
@@ -127,10 +131,12 @@ def _parse_csv(text: str) -> list[dict]:
 
         price_transfer = None
         price_sistecredito = None
+        price_card = None
         if price_cash is not None:
             surcharge = TRANSFER_SURCHARGE if price_cash > TRANSFER_SURCHARGE_MIN_PRICE else 0
             price_transfer = price_cash + surcharge
             price_sistecredito = int(round(price_cash * SISTECREDITO_MULTIPLIER))
+            price_card = int(round(price_cash * TARJETA_MULTIPLIER))
 
         category = (
             _leading_block_category(product) if category_state == "CONSOLA" else category_state
@@ -144,6 +150,7 @@ def _parse_csv(text: str) -> list[dict]:
                 "price_cash": price_cash,
                 "price_transfer": price_transfer,
                 "price_sistecredito": price_sistecredito,
+                "price_card": price_card,
                 "condition": status_raw.strip() or None,
                 "has_box": has_box_raw.strip() or None,
                 "location": location_raw.strip() or None,
